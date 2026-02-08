@@ -69,6 +69,23 @@ This generates `teacher_sft.jsonl` and trains a LoRA adapter in:
   - replan penalty
   - time budget penalty
 
+### Turnkey rollout logger (mine-diamond)
+```bash
+python tools/prime_rl_rollout_logger.py \
+  --base-url http://127.0.0.1:9500 \
+  --task "obtain diamond" \
+  --out-dir /workspace/outputs/prime_rollouts \
+  --max-steps 1200 \
+  --replan-threshold-seconds 300 \
+  --discord-webhook-url "$DISCORD_WEBHOOK_URL"
+```
+
+Outputs per run:
+- `events_*.jsonl`: full per-step trace, including action response, active task, goal, replans, and inventory counts.
+- `metrics_*.csv`: compact timeseries for dashboarding.
+- `summary_*.json`: run-level stats.
+- `progress_*.png`: progress + diamond-count graph (when matplotlib is available).
+
 ## 5) Commercial vs Open Models
 - Closed/commercial models: excellent teachers + baselines + judges.
 - Prime-RL weight updates apply to open-weight models only.

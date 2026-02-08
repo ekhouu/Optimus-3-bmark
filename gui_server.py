@@ -1,5 +1,6 @@
 import asyncio
 import base64
+import json
 import logging
 import os
 import random
@@ -129,6 +130,30 @@ AUTO_REPLAN_ENABLED = _env_or_default("OPTIMUS_AUTO_REPLAN", "0") == "1"
 REPLAN_NO_PROGRESS_SECONDS = int(_env_or_default("OPTIMUS_REPLAN_NO_PROGRESS_SECONDS", "300"))
 REPLAN_MIN_INTERVAL_SECONDS = int(_env_or_default("OPTIMUS_REPLAN_MIN_INTERVAL_SECONDS", "30"))
 REPLAN_ON_GOAL_COMPLETION = _env_or_default("OPTIMUS_REPLAN_ON_GOAL_COMPLETION", "0") == "1"
+RUN_LOG_DIR = Path(_env_or_default("OPTIMUS_RUN_LOG_DIR", str(REPO_ROOT / "outputs" / "server_traces")))
+LLM_TRACE_LOG_PATH = Path(_env_or_default("OPTIMUS_LLM_TRACE_LOG", str(RUN_LOG_DIR / "llm_trace.jsonl")))
+
+
+def _append_jsonl(path: Path, row: Dict[str, Any]) -> None:
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(row, ensure_ascii=True) + "\n")
+    except Exception:
+        logger.exception("Failed writing trace row to %s", path)
+
+
+def _log_llm_event(event_type: str, request_payload: Dict[str, Any], response_text: str, extra: Dict[str, Any] | None = None):
+    row: Dict[str, Any] = {
+        "ts": time.time(),
+        "event_type": event_type,
+        "request": request_payload,
+        "response": response_text,
+        "session_id": session_id,
+    }
+    if extra:
+        row["extra"] = extra
+    _append_jsonl(LLM_TRACE_LOG_PATH, row)
 
 
 def ndarray_to_base64(arr: np.ndarray) -> str:
@@ -205,6 +230,18 @@ def _try_replan(trigger: str, force: bool = False, threshold_seconds: int | None
     response_text, _sub_plans, _goals = model.plan(planning_query, state_context=state_context, from_scratch=False)
     if not _sub_plans or not _goals:
         return False, "empty_replan"
+    _log_llm_event(
+        "replan",
+        {
+            "planning_query": planning_query,
+            "trigger": trigger,
+            "force": force,
+            "state_context": state_context,
+            "threshold_seconds": threshold,
+        },
+        response_text,
+        {"plan_length": min(len(_sub_plans), len(_goals))},
+    )
     sub_tasks = _sub_plans
     goals = _goals
     sub_task_index = 0
@@ -508,6 +545,16 @@ async def send_text(text_data: TextData):
                         state_context=state_context,
                         from_scratch=from_scratch,
                     )
+                    _log_llm_event(
+                        "planning",
+                        {
+                            "planning_query": user_text,
+                            "from_scratch": from_scratch,
+                            "state_context": state_context,
+                        },
+                        response_text,
+                        {"plan_length": min(len(_sub_plans), len(_goals))},
+                    )
                     sub_tasks = _sub_plans
                     goals = _goals
                     sub_task_index = 0
@@ -619,6 +666,7 @@ async def plan_state():
     plan_length = _plan_length()
     active_task = None
     active_goal = None
+    inventory_counts = _inventory_aggregate(current_info)
     if plan_length > 0 and sub_task_index < plan_length:
         active_task = sub_tasks[sub_task_index]
         active_goal = goals[sub_task_index]
@@ -637,6 +685,7 @@ async def plan_state():
         "last_goal_completion_ts": last_goal_completion_ts,
         "last_replan_ts": last_replan_ts,
         "inventory_summary": _inventory_summary_text(current_info),
+        "inventory_counts": inventory_counts,
     }
 
 

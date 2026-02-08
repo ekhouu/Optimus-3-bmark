@@ -38,6 +38,7 @@ These are the same core backend endpoints used by OptimusGUI:
 ## Planner Context
 Planner can (and should) receive current state context:
 - inventory summary (aggregated item counts)
+- inventory counts map (for reward features, e.g. diamond trajectory)
 - current player position
 - current plan index/length
 
@@ -67,3 +68,6 @@ Current server behavior:
 ## Notes
 - `GET /status` is health only; action stepping happens via `POST /send_text` with `task="action"`.
 - Prime verifier should run the loop itself and treat server as rollout backend.
+- Optional server-side LLM trace:
+  - set `OPTIMUS_LLM_TRACE_LOG=/workspace/outputs/server_traces/llm_trace.jsonl`
+  - planning and replan request/response pairs are appended as JSONL.

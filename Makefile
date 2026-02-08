@@ -13,7 +13,7 @@ OUTPUT_DIR ?= /workspace/Optimus-3-bmark/outputs/distill_minediamonds
 REPEATS_PER_TASK ?= 6
 EPOCHS ?= 1.0
 
-.PHONY: install-train-deps distill distill-fast bench
+.PHONY: install-train-deps distill distill-fast bench prime-rollout
 
 install-train-deps:
 	$(UV) pip install torch transformers datasets peft accelerate
@@ -51,5 +51,15 @@ bench:
 		--api-key "$(OPENAI_API_KEY)" \
 		--models "$(TEACHER_MODEL),gpt-4o-mini" \
 		--repeat 2 \
+		$(if $(DISCORD_WEBHOOK_URL),--discord-webhook-url "$(DISCORD_WEBHOOK_URL)",) \
+		--discord-min-interval-s "$(DISCORD_MIN_INTERVAL_S)"
+
+prime-rollout:
+	$(PYTHON) tools/prime_rl_rollout_logger.py \
+		--base-url http://127.0.0.1:9500 \
+		--task "obtain diamond" \
+		--out-dir /workspace/outputs/prime_rollouts \
+		--replan-threshold-seconds 300 \
+		--max-steps 1200 \
 		$(if $(DISCORD_WEBHOOK_URL),--discord-webhook-url "$(DISCORD_WEBHOOK_URL)",) \
 		--discord-min-interval-s "$(DISCORD_MIN_INTERVAL_S)"
