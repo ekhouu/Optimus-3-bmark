@@ -76,9 +76,15 @@ class Optimus3Agent(BaseAgent, ModelHubMixin):
         self.cache_mllm_embed = None
         self.cache_task = None
 
-        self.model = Optimus3ForConditionalGeneration.from_pretrained(
-            mllm_model_path, attn_implementation="flash_attention_2", torch_dtype=torch.bfloat16
-        )
+        try:
+            self.model = Optimus3ForConditionalGeneration.from_pretrained(
+                mllm_model_path, attn_implementation="flash_attention_2", torch_dtype=torch.bfloat16
+            )
+        except ImportError as exc:
+            logger.warning("FlashAttention2 unavailable, falling back to sdpa: %s", exc)
+            self.model = Optimus3ForConditionalGeneration.from_pretrained(
+                mllm_model_path, attn_implementation="sdpa", torch_dtype=torch.bfloat16
+            )
         self.processor = AutoProcessor.from_pretrained(mllm_model_path)
         self.task_router = TaskRouterModel.from_pretrained(task_router_ckpt_path)
 
