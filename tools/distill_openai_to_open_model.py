@@ -311,8 +311,9 @@ def train_student_lora(
         model=model,
         args=args,
         train_dataset=tokenized,
-        tokenizer=tokenizer,
         data_collator=DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False),
+        processing_class=tokenizer,
+        label_names=["labels"],
         callbacks=[DiscordTrainCallback()],
     )
 

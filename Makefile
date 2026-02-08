@@ -5,6 +5,7 @@ UV ?= uv
 
 OPENAI_API_KEY ?=
 DISCORD_WEBHOOK_URL ?=
+DISCORD_MIN_INTERVAL_S ?= 20
 TEACHER_MODEL ?= gpt-4.1-mini
 STUDENT_MODEL ?= Qwen/Qwen2.5-0.5B-Instruct
 TASKS_FILE ?= tools/mine_diamonds_tasks.txt
@@ -27,7 +28,8 @@ distill:
 		--repeats-per-task "$(REPEATS_PER_TASK)" \
 		--epochs "$(EPOCHS)" \
 		--output-dir "$(OUTPUT_DIR)" \
-		$(if $(DISCORD_WEBHOOK_URL),--discord-webhook-url "$(DISCORD_WEBHOOK_URL)",)
+		$(if $(DISCORD_WEBHOOK_URL),--discord-webhook-url "$(DISCORD_WEBHOOK_URL)",) \
+		--discord-min-interval-s "$(DISCORD_MIN_INTERVAL_S)"
 
 distill-fast:
 	test -n "$(OPENAI_API_KEY)" || (echo "Set OPENAI_API_KEY"; exit 1)
@@ -39,7 +41,8 @@ distill-fast:
 		--repeats-per-task 2 \
 		--epochs 0.3 \
 		--output-dir "$(OUTPUT_DIR)_fast" \
-		$(if $(DISCORD_WEBHOOK_URL),--discord-webhook-url "$(DISCORD_WEBHOOK_URL)",)
+		$(if $(DISCORD_WEBHOOK_URL),--discord-webhook-url "$(DISCORD_WEBHOOK_URL)",) \
+		--discord-min-interval-s "$(DISCORD_MIN_INTERVAL_S)"
 
 bench:
 	test -n "$(OPENAI_API_KEY)" || (echo "Set OPENAI_API_KEY"; exit 1)
@@ -48,4 +51,5 @@ bench:
 		--api-key "$(OPENAI_API_KEY)" \
 		--models "$(TEACHER_MODEL),gpt-4o-mini" \
 		--repeat 2 \
-		$(if $(DISCORD_WEBHOOK_URL),--discord-webhook-url "$(DISCORD_WEBHOOK_URL)",)
+		$(if $(DISCORD_WEBHOOK_URL),--discord-webhook-url "$(DISCORD_WEBHOOK_URL)",) \
+		--discord-min-interval-s "$(DISCORD_MIN_INTERVAL_S)"
