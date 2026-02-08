@@ -79,10 +79,12 @@ download Optimus-3 action head (https://huggingface.co/MinecraftOptimus/Optimus-
 download Optimus-3 task router (https://huggingface.co/MinecraftOptimus/Optimus-3-Task-Router) into folder 'checkpoint'
 download original sentence-bert (https://huggingface.co/efederici/sentence-bert-base) into folder 'checkpoint'
 
-# change the ckpt path
-change the optimus3 (actionhead,mllm,task router) checkpoint path in gui_server.py (line 229)
-change the optimus3 task router checkpoint path in ./src/minecraftoptimus/model/agent/optimus3.py (line 64)
-change the sentence-bert checkpoint path in ./src/minecraftoptimus/model/optimus3/modeling_task_router.py (line 11)
+# optional: set checkpoint paths in `.env` (auto-loaded by gui_server.py)
+OPTIMUS_ACTION_HEAD_CKPT_PATH=/workspace/Optimus-3-bmark/checkpoint/Optimus-3-ActionHead
+OPTIMUS_MLLM_CKPT_PATH=/workspace/Optimus-3-bmark/checkpoint/Optimus-3
+OPTIMUS_TASK_ROUTER_CKPT_PATH=/workspace/Optimus-3-bmark/checkpoint/Optimus-3-Task-Router
+# optional sentence-bert override for task router
+OPTIMUS_SENTENCE_BERT_PATH=/workspace/Optimus-3-bmark/checkpoint/sentence-bert-base
 
 # Communication IP settings
 input the ip of your server in gui_server.py (line 459)
@@ -165,7 +167,6 @@ If you find this work useful for your research, please kindly cite our paper:
   year={2025}
 }
 ```
-
 
 
 

@@ -1,11 +1,13 @@
 import asyncio
 import base64
 import logging
+import os
 import random
 import time
 import uuid
 from datetime import datetime
 from io import BytesIO
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import numpy as np
@@ -74,6 +76,47 @@ iron_ore_count = 0
 golden_ore_count = 0
 diamond_ore_count = 0
 redstone_ore_count = 0
+
+
+REPO_ROOT = Path(__file__).resolve().parent
+
+
+def _strip_env_value(raw: str) -> str:
+    value = raw.strip()
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+        return value[1:-1]
+    return value
+
+
+def _load_local_env(env_path: Path) -> None:
+    """Minimal .env loader to avoid requiring python-dotenv."""
+    if not env_path.exists():
+        return
+    for line in env_path.read_text(encoding="utf-8").splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or "=" not in stripped:
+            continue
+        key, raw_val = stripped.split("=", 1)
+        key = key.strip()
+        if not key:
+            continue
+        os.environ.setdefault(key, _strip_env_value(raw_val))
+
+
+def _env_or_default(name: str, default: str) -> str:
+    value = (os.getenv(name) or "").strip()
+    return value if value else default
+
+
+_load_local_env(REPO_ROOT / ".env")
+
+ACTION_HEAD_CKPT_PATH = _env_or_default(
+    "OPTIMUS_ACTION_HEAD_CKPT_PATH", "/workspace/Optimus-3-bmark/checkpoint/Optimus-3-ActionHead"
+)
+OPTIMUS3_CKPT_PATH = _env_or_default("OPTIMUS_MLLM_CKPT_PATH", "/workspace/Optimus-3-bmark/checkpoint/Optimus-3")
+TASK_ROUTER_CKPT_PATH = _env_or_default(
+    "OPTIMUS_TASK_ROUTER_CKPT_PATH", "/workspace/Optimus-3-bmark/checkpoint/Optimus-3-Task-Router"
+)
 
 
 def ndarray_to_base64(arr: np.ndarray) -> str:
@@ -225,10 +268,16 @@ async def reset(reset_data: ResetData):
         current_obs, current_info = env.reset()
         helper = {"craft": CraftWorker(env), "smelt": SmeltWorker(env), "equip": EquipWorker(env)}
         if not model:
+            logger.info(
+                "Loading checkpoints | action_head=%s | optimus3=%s | task_router=%s",
+                ACTION_HEAD_CKPT_PATH,
+                OPTIMUS3_CKPT_PATH,
+                TASK_ROUTER_CKPT_PATH,
+            )
             model = Optimus3Agent(
-                "path_to_action_head/20250526-Optimus3-Policy",
-                "path_to_optimus3/Optimus3",
-                "path_to_task_router/optimus3-task-router",
+                ACTION_HEAD_CKPT_PATH,
+                OPTIMUS3_CKPT_PATH,
+                TASK_ROUTER_CKPT_PATH,
                 device=reset_data.device,
             )
         obs_b64 = ndarray_to_base64(current_info["pov"])

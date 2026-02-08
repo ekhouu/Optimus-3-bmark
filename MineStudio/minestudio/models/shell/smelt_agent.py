@@ -5,6 +5,12 @@ from typing import Sequence, List, Mapping, Dict, Callable, Any, Tuple, Optional
 
 from .craft_agent import COMPUTE_SLOT_POS, Worker
 
+ASSETS_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "assets"))
+
+
+def _asset_path(*parts: str) -> str:
+    return os.path.join(ASSETS_ROOT, *parts)
+
 CAMERA_SCALER = 360.0 / 2400.0
 WIDTH, HEIGHT = 640, 360
 KEY_POS_FURNACE_WO_RECIPE = {
@@ -126,10 +132,7 @@ class Worker_smelting(Worker):
             if self.info['isGuiOpen']:
                 self._call_func('inventory')
 
-            cur_path = os.path.abspath(os.path.dirname(__file__))
-            root_path = "MineStudio/minestudio"
-            relative_path = os.path.join("assets/recipes", target + '.json')
-            recipe_json_path = os.path.join(root_path, relative_path)
+            recipe_json_path = _asset_path("recipes", target + ".json")
             try:
                 with open(recipe_json_path) as file:
                     recipe_info = json.load(file)
@@ -163,8 +166,7 @@ class Worker_smelting(Worker):
 
             if fuels_type == 'coalstodo':
 
-                relative_path_fuels = os.path.join("assets/recipes", 'charcoal' + '.json')
-                recipe_json_path_fuels = os.path.join(root_path, relative_path_fuels)
+                recipe_json_path_fuels = _asset_path("recipes", "charcoal.json")
                 with open(recipe_json_path_fuels) as file:
                     recipe_info_fuels = json.load(file)
 

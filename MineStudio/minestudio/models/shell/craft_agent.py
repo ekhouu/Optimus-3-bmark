@@ -10,6 +10,12 @@ from typing import (
 )
 from minestudio.simulator.entry import MinecraftSim
 
+ASSETS_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "assets"))
+
+
+def _asset_path(*parts: str) -> str:
+    return os.path.join(ASSETS_ROOT, *parts)
+
 
 def random_dic(dicts):
     dict_key_ls = list(dicts.keys())
@@ -465,10 +471,7 @@ class Worker(object):
 
             # is item/tag
             is_tag = False
-            cur_path = os.path.abspath(os.path.dirname(__file__))
-            root_path = "/data7/Users/xyq/developer/MinecraftOptimus/MineStudio/minestudio"
-            relative_path = os.path.join("assets/tag_items.json")
-            tag_json_path = os.path.join(root_path, relative_path)
+            tag_json_path = _asset_path("tag_items.json")
             with open(tag_json_path) as file:
                 tag_info = json.load(file)
             for key in tag_info:
@@ -484,8 +487,7 @@ class Worker(object):
                 for item in item_list:
                     subtarget = item[10:]
 
-                    relative_path = os.path.join("assets/recipes", subtarget + '.json')
-                    recipe_json_path = os.path.join(root_path, relative_path)
+                    recipe_json_path = _asset_path("recipes", subtarget + ".json")
                     with open(recipe_json_path) as file:
                         recipe_info = json.load(file)
                     need_table = self.crafting_type(recipe_info)
@@ -540,10 +542,7 @@ class Worker(object):
             self._null_action(1)
             if self.info['isGuiOpen']:
                 self._call_func('inventory')
-            cur_path = os.path.abspath(os.path.dirname(__file__))
-            root_path = "/data7/Users/xyq/developer/MinecraftOptimus/MineStudio/minestudio"
-            relative_path = os.path.join("assets/recipes", target + '.json').replace(" ","_")
-            recipe_json_path = os.path.join(root_path, relative_path)
+            recipe_json_path = _asset_path("recipes", (target + ".json").replace(" ", "_"))
             try:
                 with open(recipe_json_path) as file:
                     recipe_info = json.load(file)
@@ -639,10 +638,7 @@ class Worker(object):
                         return result[0]
             elif item_type == "tag":
                 # tag info
-                cur_path = os.path.abspath(os.path.dirname(__file__))
-                root_path = "/data7/Users/xyq/developer/MinecraftOptimus/MineStudio/minestudio"
-                relative_path = os.path.join("assets/tag_items.json")
-                tag_json_path = os.path.join(root_path, relative_path)
+                tag_json_path = _asset_path("tag_items.json")
                 with open(tag_json_path) as file:
                     tag_info = json.load(file)
 
