@@ -194,10 +194,23 @@ class Optimus3Agent(BaseAgent, ModelHubMixin):
         return output_texts
 
     @torch.inference_mode()
-    def plan(self, task: str) -> tuple[str, list[str], list[dict]]:
+    def plan(
+        self,
+        task: str,
+        state_context: str | None = None,
+        from_scratch: bool = True,
+    ) -> tuple[str, list[str], list[dict]]:
+        if from_scratch:
+            planning_user_text = f"How to {task} from scratch?"
+        else:
+            planning_user_text = (
+                f"How to {task} from the current Minecraft state?"
+                + (f"\nCurrent state:\n{state_context}" if state_context else "")
+            )
+
         if self.commercial_provider is not None:
             planning_prompt = (
-                f"How to {task} from scratch?\n"
+                f"{planning_user_text}\n"
                 "Respond with a concise plan and wrap the full answer in <answer>...</answer>.\n"
                 "Format each step exactly as: step N: <instruction>.\n"
                 "When possible, include explicit quantities and target items."
@@ -215,7 +228,7 @@ class Optimus3Agent(BaseAgent, ModelHubMixin):
                         "role": "system",
                         "content": self.system_prompt,
                     },
-                    {"role": "user", "content": [{"type": "text", "text": "How to " + task + " from scratch?"}]},
+                    {"role": "user", "content": [{"type": "text", "text": planning_user_text}]},
                 ]
                 original_text = self._generate(messages, task_type="plan", max_new_tokens=512)[0]
         else:
@@ -224,7 +237,7 @@ class Optimus3Agent(BaseAgent, ModelHubMixin):
                     "role": "system",
                     "content": self.system_prompt,
                 },
-                {"role": "user", "content": [{"type": "text", "text": "How to " + task + " from scratch?"}]},
+                {"role": "user", "content": [{"type": "text", "text": planning_user_text}]},
             ]
             original_text = self._generate(messages, task_type="plan", max_new_tokens=512)[0]
         output_texts = extract_answer(original_text)

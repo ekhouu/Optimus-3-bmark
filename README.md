@@ -99,6 +99,31 @@ export OPTIMUS_COMMERCIAL_LLM_API_BASE="https://api.openai.com/v1"
 export OPTIMUS_COMMERCIAL_LLM_TEMPERATURE="0.2"
 export OPTIMUS_COMMERCIAL_LLM_MAX_TOKENS="512"
 export OPTIMUS_COMMERCIAL_LLM_TIMEOUT_S="60"
+
+# optional: automatic replanning controls
+export OPTIMUS_AUTO_REPLAN="0"
+export OPTIMUS_REPLAN_ON_GOAL_COMPLETION="0"
+export OPTIMUS_REPLAN_NO_PROGRESS_SECONDS="300"
+export OPTIMUS_REPLAN_MIN_INTERVAL_SECONDS="30"
+
+# useful state/replan endpoints for verifier loops
+# GET  /plan_state
+# POST /maybe_replan {"threshold_seconds":300,"force":false}
+```
+
+### OpenAI-to-Open Distillation (small model)
+```shell
+# install minimal training deps
+uv pip install torch transformers datasets peft accelerate
+
+# run teacher -> SFT -> LoRA (with optional Discord progress)
+python tools/distill_openai_to_open_model.py \
+  --openai-api-key "$OPENAI_API_KEY" \
+  --teacher-model "gpt-4.1-mini" \
+  --student-model "Qwen/Qwen2.5-0.5B-Instruct" \
+  --tasks-file tools/mine_diamonds_tasks.txt \
+  --output-dir outputs/distill_minediamonds \
+  --discord-webhook-url "$DISCORD_WEBHOOK_URL"
 ```
 
 ### Client
@@ -167,8 +192,6 @@ If you find this work useful for your research, please kindly cite our paper:
   year={2025}
 }
 ```
-
-
 
 
 

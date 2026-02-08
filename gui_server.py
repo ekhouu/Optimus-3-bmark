@@ -58,6 +58,11 @@ class TextData(BaseModel):
     task: str
 
 
+class MaybeReplanData(BaseModel):
+    threshold_seconds: int = 300
+    force: bool = False
+
+
 # Global variables to store environment and model state
 env = None
 helper = None
@@ -76,6 +81,9 @@ iron_ore_count = 0
 golden_ore_count = 0
 diamond_ore_count = 0
 redstone_ore_count = 0
+planning_query = None
+last_goal_completion_ts = None
+last_replan_ts = None
 
 
 REPO_ROOT = Path(__file__).resolve().parent
@@ -117,6 +125,10 @@ OPTIMUS3_CKPT_PATH = _env_or_default("OPTIMUS_MLLM_CKPT_PATH", "/workspace/Optim
 TASK_ROUTER_CKPT_PATH = _env_or_default(
     "OPTIMUS_TASK_ROUTER_CKPT_PATH", "/workspace/Optimus-3-bmark/checkpoint/Optimus-3-Task-Router"
 )
+AUTO_REPLAN_ENABLED = _env_or_default("OPTIMUS_AUTO_REPLAN", "0") == "1"
+REPLAN_NO_PROGRESS_SECONDS = int(_env_or_default("OPTIMUS_REPLAN_NO_PROGRESS_SECONDS", "300"))
+REPLAN_MIN_INTERVAL_SECONDS = int(_env_or_default("OPTIMUS_REPLAN_MIN_INTERVAL_SECONDS", "30"))
+REPLAN_ON_GOAL_COMPLETION = _env_or_default("OPTIMUS_REPLAN_ON_GOAL_COMPLETION", "0") == "1"
 
 
 def ndarray_to_base64(arr: np.ndarray) -> str:
@@ -129,6 +141,78 @@ def ndarray_to_base64(arr: np.ndarray) -> str:
     buffered = BytesIO()
     img.save(buffered, format="PNG")
     return base64.b64encode(buffered.getvalue()).decode("utf-8")
+
+
+def _inventory_aggregate(info: Dict[str, Any] | None) -> Dict[str, int]:
+    aggregate: Dict[str, int] = {}
+    if not info or "inventory" not in info:
+        return aggregate
+    inventory = info.get("inventory") or {}
+    for slot in inventory.values():
+        item_type = slot.get("type")
+        quantity = slot.get("quantity", 0)
+        if not item_type or item_type == "none" or quantity <= 0:
+            continue
+        aggregate[item_type] = aggregate.get(item_type, 0) + int(quantity)
+    return aggregate
+
+
+def _inventory_summary_text(info: Dict[str, Any] | None, max_items: int = 20) -> str:
+    aggregate = _inventory_aggregate(info)
+    if not aggregate:
+        return "empty"
+    parts = [f"{name}:{count}" for name, count in sorted(aggregate.items(), key=lambda x: (-x[1], x[0]))[:max_items]]
+    return ", ".join(parts)
+
+
+def _state_context_text(info: Dict[str, Any] | None) -> str:
+    if not info:
+        return ""
+    inventory_text = _inventory_summary_text(info)
+    pos = info.get("player_pos") or {}
+    if pos:
+        return (
+            f"inventory={inventory_text}; "
+            f"position=({pos.get('x', 0):.2f},{pos.get('y', 0):.2f},{pos.get('z', 0):.2f})"
+        )
+    return f"inventory={inventory_text}"
+
+
+def _plan_length() -> int:
+    if not sub_tasks or not goals:
+        return 0
+    return min(len(sub_tasks), len(goals))
+
+
+def _try_replan(trigger: str, force: bool = False, threshold_seconds: int | None = None) -> tuple[bool, str]:
+    global sub_tasks, goals, sub_task_index, planning_query, last_goal_completion_ts, last_replan_ts
+
+    if model is None:
+        return False, "model_not_initialized"
+    if not planning_query:
+        return False, "missing_planning_query"
+
+    now = time.time()
+    threshold = REPLAN_NO_PROGRESS_SECONDS if threshold_seconds is None else threshold_seconds
+    if not force:
+        if last_replan_ts is not None and (now - last_replan_ts) < REPLAN_MIN_INTERVAL_SECONDS:
+            return False, "replan_cooldown"
+        if last_goal_completion_ts is not None and trigger == "no_progress":
+            if (now - last_goal_completion_ts) < threshold:
+                return False, "below_no_progress_threshold"
+
+    state_context = _state_context_text(current_info)
+    response_text, _sub_plans, _goals = model.plan(planning_query, state_context=state_context, from_scratch=False)
+    if not _sub_plans or not _goals:
+        return False, "empty_replan"
+    sub_tasks = _sub_plans
+    goals = _goals
+    sub_task_index = 0
+    model.task = None
+    last_replan_ts = now
+    last_goal_completion_ts = now
+    logger.info("Replanned (%s): %d tasks", trigger, _plan_length())
+    return True, response_text
 
 
 @app.get("/gpu")
@@ -237,6 +321,7 @@ async def reset(reset_data: ResetData):
     Initializes or resets the MinecRL environment and loads the model.
     """
     global env, model, current_obs, session_start_time, session_id, helper, current_info
+    global sub_tasks, goals, sub_task_index, planning_query, last_goal_completion_ts, last_replan_ts
 
     try:
         # Close existing environment if one exists
@@ -266,6 +351,12 @@ async def reset(reset_data: ResetData):
 
         # Reset the environment to get initial observation
         current_obs, current_info = env.reset()
+        sub_tasks = None
+        goals = None
+        sub_task_index = 0
+        planning_query = None
+        last_goal_completion_ts = None
+        last_replan_ts = None
         helper = {"craft": CraftWorker(env), "smelt": SmeltWorker(env), "equip": EquipWorker(env)}
         if not model:
             logger.info(
@@ -385,6 +476,7 @@ async def send_text(text_data: TextData):
     Processes a text command and returns a response.
     """
     global env, model, current_obs, sub_tasks, goals, sub_task_index, last_action, current_info
+    global planning_query, last_goal_completion_ts, last_replan_ts
     if not env or model is None:
         raise HTTPException(status_code=400, detail="Environment not initialized. Call /reset first.")
 
@@ -407,30 +499,58 @@ async def send_text(text_data: TextData):
             with torch.no_grad():
                 print(f"Task type: {task_type}")
                 if task_type == "planning":
-                    response_text, _sub_plans, _goals = model.plan(user_text)
+                    planning_query = user_text
+                    inv_agg = _inventory_aggregate(current_info)
+                    from_scratch = len(inv_agg) == 0
+                    state_context = _state_context_text(current_info) if not from_scratch else None
+                    response_text, _sub_plans, _goals = model.plan(
+                        user_text,
+                        state_context=state_context,
+                        from_scratch=from_scratch,
+                    )
                     sub_tasks = _sub_plans
                     goals = _goals
                     sub_task_index = 0
                     model.task = None
+                    now = time.time()
+                    last_goal_completion_ts = now
+                    last_replan_ts = None
                 elif task_type == "captioning" or task_type == "embodied_qa":
                     response_text = model.answer(user_text, img)
                 elif task_type == "action":
-                    
-                    if sub_tasks and sub_task_index < len(sub_tasks):
-                        if model.task is None:
-                            model.reset(sub_tasks[sub_task_index])
-                        obs, info, check = _step(
-                            env, model, current_obs, sub_tasks[sub_task_index], goals[sub_task_index], helper
-                        )
-                        if check:
-                            sub_task_index += 1
-                            model.task = None
-                        current_obs = obs
-                        current_info = info
-
-                        response_text = sub_tasks[sub_task_index]
+                    if not sub_tasks or not goals:
+                        response_text = "No active plan. Run planning first."
                     else:
-                        response_text = "success"
+                        plan_length = min(len(sub_tasks), len(goals))
+                        if plan_length == 0:
+                            response_text = "No active plan. Run planning first."
+                        elif sub_task_index >= plan_length:
+                            response_text = "success"
+                        else:
+                            if model.task is None:
+                                model.reset(sub_tasks[sub_task_index])
+                            obs, info, check = _step(
+                                env, model, current_obs, sub_tasks[sub_task_index], goals[sub_task_index], helper
+                            )
+                            if check:
+                                sub_task_index += 1
+                                model.task = None
+                                last_goal_completion_ts = time.time()
+                            current_obs = obs
+                            current_info = info
+                            if AUTO_REPLAN_ENABLED:
+                                if check and REPLAN_ON_GOAL_COMPLETION:
+                                    replanned, _ = _try_replan("goal_completed", force=False)
+                                    if replanned:
+                                        plan_length = _plan_length()
+                                elif not check:
+                                    replanned, _ = _try_replan("no_progress", force=False)
+                                    if replanned:
+                                        plan_length = _plan_length()
+                            if sub_task_index < plan_length:
+                                response_text = sub_tasks[sub_task_index]
+                            else:
+                                response_text = "success"
                 elif task_type == "grounding":
                     response_text = model.grounding(user_text, img)
                 else:
@@ -492,6 +612,46 @@ async def receive_text():
     except Exception as e:
         logger.error(f"Error generating status text: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to generate status: {str(e)}")
+
+
+@app.get("/plan_state")
+async def plan_state():
+    plan_length = _plan_length()
+    active_task = None
+    active_goal = None
+    if plan_length > 0 and sub_task_index < plan_length:
+        active_task = sub_tasks[sub_task_index]
+        active_goal = goals[sub_task_index]
+    now = time.time()
+    seconds_since_progress = None
+    if last_goal_completion_ts is not None:
+        seconds_since_progress = now - last_goal_completion_ts
+    return {
+        "status": "success",
+        "planning_query": planning_query,
+        "plan_length": plan_length,
+        "sub_task_index": sub_task_index,
+        "active_task": active_task,
+        "active_goal": active_goal,
+        "seconds_since_progress": seconds_since_progress,
+        "last_goal_completion_ts": last_goal_completion_ts,
+        "last_replan_ts": last_replan_ts,
+        "inventory_summary": _inventory_summary_text(current_info),
+    }
+
+
+@app.post("/maybe_replan")
+async def maybe_replan(req: MaybeReplanData):
+    trigger = "manual_force" if req.force else "no_progress"
+    replanned, detail = _try_replan(trigger=trigger, force=req.force, threshold_seconds=req.threshold_seconds)
+    return {
+        "status": "success",
+        "replanned": replanned,
+        "detail": detail,
+        "plan_length": _plan_length(),
+        "sub_task_index": sub_task_index,
+        "active_task": sub_tasks[sub_task_index] if _plan_length() > 0 and sub_task_index < _plan_length() else None,
+    }
 
 
 @app.get("/status")
