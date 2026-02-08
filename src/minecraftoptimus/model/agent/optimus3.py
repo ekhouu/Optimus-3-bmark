@@ -1,4 +1,5 @@
 import re
+import logging
 from typing import Any
 
 import numpy as np
@@ -8,10 +9,14 @@ from qwen_vl_utils import process_vision_info
 from transformers import AutoProcessor
 
 from minecraftoptimus.model.agent.base import BaseAgent
+from minecraftoptimus.model.agent.commercial_provider import build_provider_from_env
 from minecraftoptimus.model.optimus3.modeling_optimus3 import Optimus3ForConditionalGeneration
 from minecraftoptimus.model.optimus3.modeling_task_router import TaskRouterModel
 from minecraftoptimus.model.steve1.agent import Optimus3ActionAgent
 from minecraftoptimus.utils import TASK2LABEL, Task_Prompt
+
+
+logger = logging.getLogger(__name__)
 
 
 def check_inventory(inventory, item, count):
@@ -89,6 +94,7 @@ class Optimus3Agent(BaseAgent, ModelHubMixin):
         self.task: str | None = None
 
         self.system_prompt = "You are an expert in Minecraft, capable of performing task planning, visual question answering, reflection, grounding and executing low-level actions."
+        self.commercial_provider = build_provider_from_env()
 
     def reset(self, task: str):
         self.task = task
@@ -183,63 +189,150 @@ class Optimus3Agent(BaseAgent, ModelHubMixin):
 
     @torch.inference_mode()
     def plan(self, task: str) -> tuple[str, list[str], list[dict]]:
-        messages = [
-            {
-                "role": "system",
-                "content": self.system_prompt,
-            },
-            {"role": "user", "content": [{"type": "text", "text": "How to " + task + " from scratch?"}]},
-        ]
-        original_text = self._generate(messages, task_type="plan", max_new_tokens=512)[0]
+        if self.commercial_provider is not None:
+            planning_prompt = (
+                f"How to {task} from scratch?\n"
+                "Respond with a concise plan and wrap the full answer in <answer>...</answer>.\n"
+                "Format each step exactly as: step N: <instruction>.\n"
+                "When possible, include explicit quantities and target items."
+            )
+            try:
+                original_text = self.commercial_provider.generate(
+                    system_prompt=self.system_prompt,
+                    user_prompt=planning_prompt,
+                    max_tokens=512,
+                )
+            except Exception:
+                logger.exception("Commercial provider plan call failed, falling back to local model.")
+                messages = [
+                    {
+                        "role": "system",
+                        "content": self.system_prompt,
+                    },
+                    {"role": "user", "content": [{"type": "text", "text": "How to " + task + " from scratch?"}]},
+                ]
+                original_text = self._generate(messages, task_type="plan", max_new_tokens=512)[0]
+        else:
+            messages = [
+                {
+                    "role": "system",
+                    "content": self.system_prompt,
+                },
+                {"role": "user", "content": [{"type": "text", "text": "How to " + task + " from scratch?"}]},
+            ]
+            original_text = self._generate(messages, task_type="plan", max_new_tokens=512)[0]
         output_texts = extract_answer(original_text)
         goals = extract_goals(output_texts)
         return original_text, extract_steps(output_texts), goals
 
     @torch.inference_mode()
     def reflection(self, task: str, image: np.ndarray | str | None) -> list[str]:
-        messages = [
-            {
-                "role": "system",
-                "content": self.system_prompt,
-            },
-            {"role": "user", "content": [{"type": "text", "text": Task_Prompt["reflection"] + task}]},
-        ]
-        if image is not None:
-            
-            messages[1]["content"].append({"type": "image", "image": image})
-        output_texts = self._generate(messages, task_type="reflection")[0]
+        if self.commercial_provider is not None:
+            try:
+                output_texts = self.commercial_provider.generate(
+                    system_prompt=self.system_prompt,
+                    user_prompt=Task_Prompt["reflection"] + task,
+                    image=image,
+                )
+            except Exception:
+                logger.exception("Commercial provider reflection call failed, falling back to local model.")
+                messages = [
+                    {
+                        "role": "system",
+                        "content": self.system_prompt,
+                    },
+                    {"role": "user", "content": [{"type": "text", "text": Task_Prompt["reflection"] + task}]},
+                ]
+                if image is not None:
+                    
+                    messages[1]["content"].append({"type": "image", "image": image})
+                output_texts = self._generate(messages, task_type="reflection")[0]
+        else:
+            messages = [
+                {
+                    "role": "system",
+                    "content": self.system_prompt,
+                },
+                {"role": "user", "content": [{"type": "text", "text": Task_Prompt["reflection"] + task}]},
+            ]
+            if image is not None:
+                
+                messages[1]["content"].append({"type": "image", "image": image})
+            output_texts = self._generate(messages, task_type="reflection")[0]
         # output_texts = [extract_answer(text) for text in output_texts]
         return output_texts
 
     @torch.inference_mode()
     def answer(self, question: str, image: np.ndarray | str | None) -> str:
-        messages = [
-            {
-                "role": "system",
-                "content": self.system_prompt,
-            },
-            {"role": "user", "content": [{"type": "text", "text": Task_Prompt["embodied_qa"] + question}]},
-        ]
-        if image is not None:
-            
-            messages[1]["content"].append({"type": "image", "image": image})
-        output_texts = self._generate(messages, task_type="vqa")[0]
+        if self.commercial_provider is not None:
+            try:
+                output_texts = self.commercial_provider.generate(
+                    system_prompt=self.system_prompt,
+                    user_prompt=Task_Prompt["embodied_qa"] + question,
+                    image=image,
+                )
+            except Exception:
+                logger.exception("Commercial provider answer call failed, falling back to local model.")
+                messages = [
+                    {
+                        "role": "system",
+                        "content": self.system_prompt,
+                    },
+                    {"role": "user", "content": [{"type": "text", "text": Task_Prompt["embodied_qa"] + question}]},
+                ]
+                if image is not None:
+                    
+                    messages[1]["content"].append({"type": "image", "image": image})
+                output_texts = self._generate(messages, task_type="vqa")[0]
+        else:
+            messages = [
+                {
+                    "role": "system",
+                    "content": self.system_prompt,
+                },
+                {"role": "user", "content": [{"type": "text", "text": Task_Prompt["embodied_qa"] + question}]},
+            ]
+            if image is not None:
+                
+                messages[1]["content"].append({"type": "image", "image": image})
+            output_texts = self._generate(messages, task_type="vqa")[0]
         # output_texts = [extract_answer(text) for text in output_texts]
         return output_texts
 
     @torch.inference_mode()
     def grounding(self, query: str, image: np.ndarray | str | None) -> str:
-        messages = [
-            {
-                "role": "system",
-                "content": self.system_prompt,
-            },
-            {"role": "user", "content": [{"type": "text", "text": Task_Prompt["grounding"] + query}]},
-        ]
-        if image is not None:
-            
-            messages[1]["content"].append({"type": "image", "image": image})
-        output_texts = self._generate(messages, task_type="grounding")[0]
+        if self.commercial_provider is not None:
+            try:
+                output_texts = self.commercial_provider.generate(
+                    system_prompt=self.system_prompt,
+                    user_prompt=Task_Prompt["grounding"] + query,
+                    image=image,
+                )
+            except Exception:
+                logger.exception("Commercial provider grounding call failed, falling back to local model.")
+                messages = [
+                    {
+                        "role": "system",
+                        "content": self.system_prompt,
+                    },
+                    {"role": "user", "content": [{"type": "text", "text": Task_Prompt["grounding"] + query}]},
+                ]
+                if image is not None:
+                    
+                    messages[1]["content"].append({"type": "image", "image": image})
+                output_texts = self._generate(messages, task_type="grounding")[0]
+        else:
+            messages = [
+                {
+                    "role": "system",
+                    "content": self.system_prompt,
+                },
+                {"role": "user", "content": [{"type": "text", "text": Task_Prompt["grounding"] + query}]},
+            ]
+            if image is not None:
+                
+                messages[1]["content"].append({"type": "image", "image": image})
+            output_texts = self._generate(messages, task_type="grounding")[0]
         # output_texts = [extract_answer(text) for text in output_texts]
         return output_texts
 

@@ -1,3 +1,6 @@
+## NOTICE!
+This is not yet ready for use, but is supposed to turn Optimus-3 into a benchmark for LLM planning.
+
 <div align="center">
 <h2 align="center">
    <img src="./assets/optimus3.png" style="vertical-align: middle; height: 1em; padding: 0 0.2em;"> <b>Optimus-3: Towards Generalist Multimodal Minecraft Agents
@@ -83,6 +86,17 @@ change the sentence-bert checkpoint path in ./src/minecraftoptimus/model/optimus
 
 # Communication IP settings
 input the ip of your server in gui_server.py (line 459)
+
+# optional: plug-and-play commercial LLM provider for planning/qa/grounding/reflection
+# action execution remains on local Optimus action head
+export OPTIMUS_COMMERCIAL_LLM_MODEL="openai/gpt-4o-mini"
+export OPTIMUS_COMMERCIAL_LLM_BACKEND="litellm"
+export OPTIMUS_COMMERCIAL_LLM_API_KEY="<your-api-key>"
+# optional for OpenAI-compatible gateways (vLLM, proxy, etc.)
+export OPTIMUS_COMMERCIAL_LLM_API_BASE="https://api.openai.com/v1"
+export OPTIMUS_COMMERCIAL_LLM_TEMPERATURE="0.2"
+export OPTIMUS_COMMERCIAL_LLM_MAX_TOKENS="512"
+export OPTIMUS_COMMERCIAL_LLM_TIMEOUT_S="60"
 ```
 
 ### Client
@@ -151,8 +165,6 @@ If you find this work useful for your research, please kindly cite our paper:
   year={2025}
 }
 ```
-
-
 
 
 
