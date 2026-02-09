@@ -190,6 +190,114 @@ def _inventory_summary_text(info: Dict[str, Any] | None, max_items: int = 20) ->
     return ", ".join(parts)
 
 
+def _count_inventory_like(aggregate: Dict[str, int], needle: str) -> int:
+    needle = needle.lower()
+    return sum(count for name, count in aggregate.items() if needle in name.lower())
+
+
+def _required_count_for_craft_prereq(item: str, count: int, aggregate: Dict[str, int]) -> tuple[str, int] | None:
+    item = item.lower()
+    if item == "planks":
+        need_logs = (count + 3) // 4
+        have_logs = _count_inventory_like(aggregate, "log")
+        if have_logs < need_logs:
+            return ("logs", need_logs)
+        return None
+
+    if item == "stick":
+        need_planks = (count + 1) // 2
+        have_planks = _count_inventory_like(aggregate, "planks")
+        if have_planks < need_planks:
+            deficit_planks = need_planks - have_planks
+            need_logs = (deficit_planks + 3) // 4
+            have_logs = _count_inventory_like(aggregate, "log")
+            if have_logs < need_logs:
+                return ("logs", need_logs)
+            return ("planks", need_planks)
+        return None
+
+    if item == "crafting_table":
+        need_planks = 4
+        have_planks = _count_inventory_like(aggregate, "planks")
+        if have_planks < need_planks:
+            deficit_planks = need_planks - have_planks
+            need_logs = (deficit_planks + 3) // 4
+            have_logs = _count_inventory_like(aggregate, "log")
+            if have_logs < need_logs:
+                return ("logs", need_logs)
+            return ("planks", need_planks)
+        return None
+
+    if item == "wooden_pickaxe":
+        need_planks = 3
+        need_stick = 2
+        have_stick = _count_inventory_like(aggregate, "stick")
+        if have_stick < need_stick:
+            return ("stick", need_stick)
+        have_planks = _count_inventory_like(aggregate, "planks")
+        if have_planks < need_planks:
+            return ("planks", need_planks)
+        return None
+
+    if item == "stone_pickaxe":
+        need_cobble = 3
+        need_stick = 2
+        have_stick = _count_inventory_like(aggregate, "stick")
+        if have_stick < need_stick:
+            return ("stick", need_stick)
+        have_cobble = _count_inventory_like(aggregate, "cobblestone")
+        if have_cobble < need_cobble:
+            return ("cobblestone", need_cobble)
+        return None
+
+    if item == "furnace":
+        need_cobble = 8
+        have_cobble = _count_inventory_like(aggregate, "cobblestone")
+        if have_cobble < need_cobble:
+            return ("cobblestone", need_cobble)
+        return None
+
+    if item == "iron_pickaxe":
+        need_iron = 3
+        need_stick = 2
+        have_stick = _count_inventory_like(aggregate, "stick")
+        if have_stick < need_stick:
+            return ("stick", need_stick)
+        have_iron = _count_inventory_like(aggregate, "iron_ingot")
+        if have_iron < need_iron:
+            return ("iron_ingot", need_iron)
+        return None
+
+    return None
+
+
+def _prereq_task(goal_item: str, goal_count: int) -> tuple[str, Dict[str, Any]]:
+    if goal_item == "logs":
+        return f"chop trees to get {goal_count} logs", {"step": 0, "count": goal_count, "item": "logs"}
+    if goal_item == "planks":
+        return f"craft {goal_count} planks", {"step": 0, "count": goal_count, "item": "planks"}
+    if goal_item == "stick":
+        return f"craft {goal_count} stick", {"step": 0, "count": goal_count, "item": "stick"}
+    if goal_item == "cobblestone":
+        return f"dig down and mine {goal_count} cobblestone", {"step": 0, "count": goal_count, "item": "cobblestone"}
+    if goal_item == "iron_ingot":
+        return f"smelt {goal_count} iron_ingot", {"step": 0, "count": goal_count, "item": "iron_ingot"}
+    return f"obtain {goal_count} {goal_item}", {"step": 0, "count": goal_count, "item": goal_item}
+
+
+def _maybe_redirect_craft_goal(task_text: str, goal: Dict[str, Any], info: Dict[str, Any] | None) -> tuple[str, Dict[str, Any]] | None:
+    if "craft" not in task_text and "smelt" not in task_text:
+        return None
+    aggregate = _inventory_aggregate(info)
+    item = str(goal.get("item", "")).strip().lower()
+    count = int(goal.get("count", 1))
+    prereq = _required_count_for_craft_prereq(item, count, aggregate)
+    if prereq is None:
+        return None
+    prereq_item, prereq_count = prereq
+    return _prereq_task(prereq_item, prereq_count)
+
+
 def _state_context_text(info: Dict[str, Any] | None) -> str:
     if not info:
         return ""
@@ -574,6 +682,20 @@ async def send_text(text_data: TextData):
                         elif sub_task_index >= plan_length:
                             response_text = "success"
                         else:
+                            redirect = _maybe_redirect_craft_goal(sub_tasks[sub_task_index], goals[sub_task_index], current_info)
+                            if redirect is not None:
+                                redirected_task, redirected_goal = redirect
+                                logger.info(
+                                    "Redirecting stalled craft goal at index=%d from (%s, %s) to (%s, %s)",
+                                    sub_task_index,
+                                    sub_tasks[sub_task_index],
+                                    goals[sub_task_index],
+                                    redirected_task,
+                                    redirected_goal,
+                                )
+                                sub_tasks[sub_task_index] = redirected_task
+                                goals[sub_task_index] = redirected_goal
+                                model.task = None
                             if model.task is None:
                                 model.reset(sub_tasks[sub_task_index])
                             obs, info, check = _step(
