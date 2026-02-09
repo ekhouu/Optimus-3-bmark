@@ -12,8 +12,12 @@ TASKS_FILE ?= tools/mine_diamonds_tasks.txt
 OUTPUT_DIR ?= /workspace/Optimus-3-bmark/outputs/distill_minediamonds
 REPEATS_PER_TASK ?= 6
 EPOCHS ?= 1.0
+PRIME_EPISODES ?= 20
+PRIME_MAX_STEPS ?= 1200
+PRIME_REPLAN_SECONDS ?= 120
+PRIME_STEP_SLEEP ?= 0.4
 
-.PHONY: install-train-deps distill distill-fast bench prime-rollout
+.PHONY: install-train-deps distill distill-fast bench prime-rollout prime-campaign
 
 install-train-deps:
 	$(UV) pip install torch transformers datasets peft accelerate
@@ -63,3 +67,18 @@ prime-rollout:
 		--max-steps 1200 \
 		$(if $(DISCORD_WEBHOOK_URL),--discord-webhook-url "$(DISCORD_WEBHOOK_URL)",) \
 		--discord-min-interval-s "$(DISCORD_MIN_INTERVAL_S)"
+
+prime-campaign:
+	$(PYTHON) tools/prime_rl_campaign.py \
+		--base-url http://127.0.0.1:9500 \
+		--tasks-file "$(TASKS_FILE)" \
+		--episodes "$(PRIME_EPISODES)" \
+		--out-dir /workspace/outputs/prime_campaigns \
+		--max-steps "$(PRIME_MAX_STEPS)" \
+		--replan-threshold-seconds "$(PRIME_REPLAN_SECONDS)" \
+		--step-sleep-seconds "$(PRIME_STEP_SLEEP)" \
+		--continue-on-error \
+		$(if $(DISCORD_WEBHOOK_URL),--discord-webhook-url "$(DISCORD_WEBHOOK_URL)",) \
+		--discord-min-interval-s "$(DISCORD_MIN_INTERVAL_S)" \
+		--discord-test-on-start \
+		--discord-send-final-artifacts

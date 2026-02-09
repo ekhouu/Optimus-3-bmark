@@ -13,7 +13,9 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import mimetypes
 import time
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -39,16 +41,32 @@ def _http_json(method: str, url: str, payload: dict | None = None, timeout: int 
 class DiscordNotifier:
     webhook_url: str | None
     min_interval_s: int = 30
+    timeout_s: int = 15
+    max_retries: int = 3
+    retry_backoff_s: float = 1.5
+    verbose: bool = False
 
     def __post_init__(self):
         self._last_sent = 0.0
 
-    def send(self, content: str, force: bool = False) -> None:
+    def _send_request(self, req: request.Request) -> bool:
+        for attempt in range(1, self.max_retries + 1):
+            try:
+                with request.urlopen(req, timeout=self.timeout_s):
+                    return True
+            except Exception as exc:
+                if self.verbose:
+                    print(f"[discord] send failed attempt={attempt}/{self.max_retries}: {exc}", flush=True)
+                if attempt < self.max_retries:
+                    time.sleep(self.retry_backoff_s * attempt)
+        return False
+
+    def send(self, content: str, force: bool = False) -> bool:
         if not self.webhook_url:
-            return
+            return False
         now = time.time()
         if not force and (now - self._last_sent) < self.min_interval_s:
-            return
+            return False
         payload = {"content": content[:1900]}
         req = request.Request(
             url=self.webhook_url,
@@ -56,11 +74,59 @@ class DiscordNotifier:
             headers={"Content-Type": "application/json"},
             data=json.dumps(payload).encode("utf-8"),
         )
-        try:
-            with request.urlopen(req, timeout=15):
-                self._last_sent = now
-        except Exception:
-            pass
+        ok = self._send_request(req)
+        if ok:
+            self._last_sent = now
+            if self.verbose:
+                print("[discord] sent text message", flush=True)
+        return ok
+
+    def send_files(self, content: str, files: list[Path], force: bool = True) -> bool:
+        if not self.webhook_url:
+            return False
+        now = time.time()
+        if not force and (now - self._last_sent) < self.min_interval_s:
+            return False
+
+        boundary = f"----optimus-boundary-{uuid.uuid4().hex}"
+        parts: list[bytes] = []
+
+        payload_json = json.dumps({"content": content[:1800]})
+        parts.append(f"--{boundary}\r\n".encode("utf-8"))
+        parts.append(b'Content-Disposition: form-data; name="payload_json"\r\n')
+        parts.append(b"Content-Type: application/json\r\n\r\n")
+        parts.append(payload_json.encode("utf-8"))
+        parts.append(b"\r\n")
+
+        for idx, path in enumerate(files):
+            if not path.exists() or not path.is_file():
+                continue
+            filename = path.name
+            mime, _ = mimetypes.guess_type(filename)
+            mime = mime or "application/octet-stream"
+            parts.append(f"--{boundary}\r\n".encode("utf-8"))
+            parts.append(
+                f'Content-Disposition: form-data; name="file{idx}"; filename="{filename}"\r\n'.encode("utf-8")
+            )
+            parts.append(f"Content-Type: {mime}\r\n\r\n".encode("utf-8"))
+            parts.append(path.read_bytes())
+            parts.append(b"\r\n")
+
+        parts.append(f"--{boundary}--\r\n".encode("utf-8"))
+        body = b"".join(parts)
+
+        req = request.Request(
+            url=self.webhook_url,
+            method="POST",
+            headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
+            data=body,
+        )
+        ok = self._send_request(req)
+        if ok:
+            self._last_sent = now
+            if self.verbose:
+                print(f"[discord] sent file message files={len(files)}", flush=True)
+        return ok
 
 
 @dataclass
@@ -75,6 +141,11 @@ class RolloutConfig:
     skip_reset: bool = False
     discord_webhook_url: str | None = None
     discord_min_interval_s: int = 30
+    discord_timeout_s: int = 15
+    discord_max_retries: int = 3
+    discord_retry_backoff_s: float = 1.5
+    discord_verbose: bool = False
+    discord_send_run_artifacts: bool = False
 
 
 def _ensure_inventory_counts(state: dict[str, Any]) -> dict[str, int]:
@@ -160,7 +231,14 @@ def run_rollout(cfg: RolloutConfig) -> int:
     summary_path = cfg.out_dir / f"summary_{ts}.json"
     plot_path = cfg.out_dir / f"progress_{ts}.png"
 
-    notifier = DiscordNotifier(cfg.discord_webhook_url, cfg.discord_min_interval_s)
+    notifier = DiscordNotifier(
+        webhook_url=cfg.discord_webhook_url,
+        min_interval_s=cfg.discord_min_interval_s,
+        timeout_s=cfg.discord_timeout_s,
+        max_retries=cfg.discord_max_retries,
+        retry_backoff_s=cfg.discord_retry_backoff_s,
+        verbose=cfg.discord_verbose,
+    )
 
     print(
         f"[rollout] start task={cfg.task!r} max_steps={cfg.max_steps} "
@@ -195,6 +273,7 @@ def run_rollout(cfg: RolloutConfig) -> int:
     replan_count = 0
     steps_taken = 0
     success = False
+    final_state: dict[str, Any] = {}
     metrics_rows: list[dict[str, Any]] = []
 
     for step in range(cfg.max_steps):
@@ -202,6 +281,7 @@ def run_rollout(cfg: RolloutConfig) -> int:
         action_resp = _http_json("POST", f"{cfg.base_url}/send_text", {"text": "", "task": "action"})
         action_text = (action_resp.get("response") or "").strip().lower()
         state = _http_json("GET", f"{cfg.base_url}/plan_state")
+        final_state = state
 
         sub_task_index = int(state.get("sub_task_index") or 0)
         plan_length = int(state.get("plan_length") or 0)
@@ -304,19 +384,26 @@ def run_rollout(cfg: RolloutConfig) -> int:
         "max_progress_ratio": round(max_progress_ratio, 6),
         "replan_count": replan_count,
         "first_diamond_step": first_diamond_step,
+        "final_plan_length": int(final_state.get("plan_length") or 0),
+        "final_sub_task_index": int(final_state.get("sub_task_index") or 0),
+        "final_seconds_since_progress": final_state.get("seconds_since_progress"),
+        "final_inventory_counts": _ensure_inventory_counts(final_state),
         "events_path": str(events_path),
         "metrics_path": str(metrics_path),
         "plot_path": str(plot_path) if plot_generated else None,
         "plot_generated": plot_generated,
     }
     summary_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
-    notifier.send(
-        (
-            f"[rollout] done success={success} steps={steps_taken} "
-            f"max_progress={max_progress_ratio:.3f} replans={replan_count}"
-        ),
-        force=True,
+    done_msg = (
+        f"[rollout] done success={success} steps={steps_taken} "
+        f"max_progress={max_progress_ratio:.3f} replans={replan_count}"
     )
+    notifier.send(done_msg, force=True)
+    if cfg.discord_send_run_artifacts:
+        files = [summary_path, metrics_path]
+        if plot_generated:
+            files.append(plot_path)
+        notifier.send_files(done_msg, files=files, force=True)
 
     print(json.dumps(summary, indent=2))
     return 0 if success else 1
@@ -334,6 +421,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--skip-reset", action="store_true")
     parser.add_argument("--discord-webhook-url", default="")
     parser.add_argument("--discord-min-interval-s", type=int, default=30)
+    parser.add_argument("--discord-timeout-s", type=int, default=15)
+    parser.add_argument("--discord-max-retries", type=int, default=3)
+    parser.add_argument("--discord-retry-backoff-s", type=float, default=1.5)
+    parser.add_argument("--discord-verbose", action="store_true")
+    parser.add_argument("--discord-send-run-artifacts", action="store_true")
     return parser.parse_args()
 
 
@@ -350,6 +442,11 @@ def main() -> int:
         skip_reset=args.skip_reset,
         discord_webhook_url=(args.discord_webhook_url or None),
         discord_min_interval_s=args.discord_min_interval_s,
+        discord_timeout_s=args.discord_timeout_s,
+        discord_max_retries=args.discord_max_retries,
+        discord_retry_backoff_s=args.discord_retry_backoff_s,
+        discord_verbose=args.discord_verbose,
+        discord_send_run_artifacts=args.discord_send_run_artifacts,
     )
     return run_rollout(cfg)
 

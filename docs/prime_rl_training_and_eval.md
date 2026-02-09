@@ -86,6 +86,36 @@ Outputs per run:
 - `summary_*.json`: run-level stats.
 - `progress_*.png`: progress + diamond-count graph (when matplotlib is available).
 
+### Multi-episode campaign (recommended)
+```bash
+python tools/prime_rl_campaign.py \
+  --base-url http://127.0.0.1:9500 \
+  --tasks-file tools/mine_diamonds_tasks.txt \
+  --episodes 20 \
+  --max-steps 1200 \
+  --replan-threshold-seconds 120 \
+  --step-sleep-seconds 0.4 \
+  --out-dir /workspace/outputs/prime_campaigns \
+  --continue-on-error \
+  --discord-webhook-url "$DISCORD_WEBHOOK_URL" \
+  --discord-test-on-start \
+  --discord-send-final-artifacts
+```
+
+Campaign outputs:
+- `campaign_*/episodes.jsonl` and `episodes.csv`
+- `campaign_*/prime_verifier_records.jsonl` and `prime_verifier_records.csv`
+- `campaign_*/aggregate.json`
+- `campaign_*/task_breakdown.csv`
+- `campaign_*/campaign_progress.png`
+
+This is directly graphable and follows a Prime-style verifier record layout (`success`, `max_progress_ratio`, `replan_count`, shaped reward components).
+
+Discord support:
+- periodic text updates per episode
+- optional artifact upload to webhook (plot + aggregate json + csv)
+- retry/backoff for robustness (`--discord-max-retries`, `--discord-retry-backoff-s`)
+
 ## 5) Commercial vs Open Models
 - Closed/commercial models: excellent teachers + baselines + judges.
 - Prime-RL weight updates apply to open-weight models only.
