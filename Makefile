@@ -16,8 +16,11 @@ PRIME_EPISODES ?= 20
 PRIME_MAX_STEPS ?= 1200
 PRIME_REPLAN_SECONDS ?= 120
 PRIME_STEP_SLEEP ?= 0.4
+CURRICULUM_EPISODES ?= 100
+CURRICULUM_CYCLES ?= 5
+CURRICULUM_OUT_ROOT ?= /workspace/outputs/overnight_curriculum
 
-.PHONY: install-train-deps distill distill-fast bench prime-rollout prime-campaign
+.PHONY: install-train-deps distill distill-fast bench prime-rollout prime-campaign curriculum-overnight
 
 install-train-deps:
 	$(UV) pip install torch transformers datasets peft accelerate
@@ -82,3 +85,17 @@ prime-campaign:
 		--discord-min-interval-s "$(DISCORD_MIN_INTERVAL_S)" \
 		--discord-test-on-start \
 		--discord-send-final-artifacts
+
+curriculum-overnight:
+	test -n "$(OPENAI_API_KEY)" || (echo "Set OPENAI_API_KEY"; exit 1)
+	$(PYTHON) tools/overnight_curriculum.py \
+		--base-url http://127.0.0.1:9500 \
+		--episodes-per-cycle "$(CURRICULUM_EPISODES)" \
+		--cycles-per-stage "$(CURRICULUM_CYCLES)" \
+		--student-model "$(STUDENT_MODEL)" \
+		--teacher-model "$(TEACHER_MODEL)" \
+		--openai-api-key "$(OPENAI_API_KEY)" \
+		--out-root "$(CURRICULUM_OUT_ROOT)" \
+		--continue-on-error \
+		$(if $(DISCORD_WEBHOOK_URL),--discord-webhook-url "$(DISCORD_WEBHOOK_URL)",) \
+		--discord-min-interval-s "$(DISCORD_MIN_INTERVAL_S)"

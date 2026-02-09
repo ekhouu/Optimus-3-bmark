@@ -62,3 +62,42 @@ def test_diamond_rubric_profile_keeps_diamond_target():
     assert reward["required_target_count"] == 1.0
     assert reward["m_diamonds"] == 1.0
     assert reward["b_extra_diamonds"] == 1.0
+
+
+def test_iron_rubric_profile_scores_iron_target():
+    summary = {
+        "success": False,
+        "max_progress_ratio": 0.7,
+        "replan_count": 1,
+        "steps_taken": 360,
+        "max_steps": 900,
+        "final_plan_length": 12,
+        "final_sub_task_index": 9,
+        "final_seconds_since_progress": 20,
+        "final_inventory_counts": {
+            "oak_log": 4,
+            "oak_planks": 12,
+            "stick": 6,
+            "crafting_table": 1,
+            "wooden_pickaxe": 1,
+            "cobblestone": 18,
+            "stone_pickaxe": 1,
+            "furnace": 1,
+            "iron_ore": 3,
+            "iron_ingot": 3,
+        },
+        "completed_goal_items": ["logs", "planks", "stick", "furnace", "iron_ore", "iron_ingot"],
+    }
+    reward = compute_verifier_reward(
+        summary,
+        task="orchestrate to obtain 3 iron_ingot",
+        bonus_enabled=True,
+        rubric_profile="iron",
+    )
+    assert reward["rubric_profile"] == "iron"
+    assert reward["target_item"] == "iron_ingot"
+    assert reward["required_target_count"] == 3.0
+    assert reward["final_target_count"] >= 3.0
+    assert reward["m_iron_ore"] == 1.0
+    assert reward["m_iron_ingot"] == 1.0
+    assert reward["m_iron_goal"] == 1.0

@@ -88,6 +88,8 @@ def _detect_rubric_profile(task: str, rubric_profile: str) -> str:
     lower = (task or "").lower()
     if any(tok in lower for tok in ("cobblestone", "obtain stone", "stone tools", "stone pickaxe")):
         return "stone"
+    if any(tok in lower for tok in ("iron", "iron_ore", "iron ore", "iron_ingot", "iron ingot", "iron pickaxe")):
+        return "iron"
     return "diamond"
 
 
@@ -120,7 +122,10 @@ def compute_verifier_reward(
     final_inventory_counts = summary.get("final_inventory_counts") or {}
     completed_goal_items = set(str(x).lower() for x in (summary.get("completed_goal_items") or []))
     required_diamonds = float(_required_diamond_count(task)) if resolved_profile == "diamond" else 0.0
+    required_iron_ingots = float(_required_count_for_item(task, "iron_ingot", "iron_ingots", 3))
     diamond_count = float(final_inventory_counts.get("diamond", 0.0) or 0.0)
+    iron_ore_count = _sum_inventory_like(final_inventory_counts, ["iron_ore"])
+    iron_ingot_count = _sum_inventory_like(final_inventory_counts, ["iron_ingot"])
     final_plan_length = float(summary.get("final_plan_length", 0.0) or 0.0)
     final_sub_task_index = float(summary.get("final_sub_task_index", 0.0) or 0.0)
     final_seconds_since_progress = summary.get("final_seconds_since_progress")
@@ -148,6 +153,9 @@ def compute_verifier_reward(
     m_stone_pickaxe = _have_item("stone_pickaxe")
     m_furnace = _have_item("furnace")
     m_iron = 1.0 if (_have_item("iron_ore") > 0 or _have_item("iron_ingot") > 0 or _have_item("iron_pickaxe") > 0) else 0.0
+    m_iron_ore = 1.0 if (iron_ore_count > 0 or _have_item("iron_ore") > 0) else 0.0
+    m_iron_ingot = 1.0 if (iron_ingot_count > 0 or _have_item("iron_ingot") > 0) else 0.0
+    m_iron_goal = 1.0 if iron_ingot_count >= required_iron_ingots else 0.0
     m_goal_progress = (
         1.0
         if success > 0
@@ -174,6 +182,24 @@ def compute_verifier_reward(
         target_item = "cobblestone"
         required_target_count = stone_goal_target
         final_target_count = cobblestone_count
+    elif resolved_profile == "iron":
+        milestone_values = [
+            m_logs,
+            m_planks,
+            m_sticks,
+            m_crafting_table,
+            m_wooden_pickaxe,
+            m_cobblestone,
+            m_stone_pickaxe,
+            m_furnace,
+            m_iron_ore,
+            m_iron_ingot,
+            m_iron_goal,
+            m_goal_progress,
+        ]
+        target_item = "iron_ingot"
+        required_target_count = required_iron_ingots
+        final_target_count = iron_ingot_count
     else:
         milestone_values = [
             m_crafting_table,
@@ -193,10 +219,13 @@ def compute_verifier_reward(
     b_low_replans = 1.0 if replan_count <= 1.0 else 0.0
     b_efficiency = 1.0 if (steps_taken / max(max_steps, 1.0)) <= 0.70 else 0.0
     b_extra_diamonds = 1.0 if diamond_count >= (required_diamonds + 1.0) else 0.0
+    b_extra_iron = 1.0 if iron_ingot_count >= (required_iron_ingots + 2.0) else 0.0
     b_extra_cobblestone = 1.0 if cobblestone_count >= (stone_goal_target + 8.0) else 0.0
     b_furnace_bonus = m_furnace
     if resolved_profile == "stone":
         bonus_values = [b_furnace_bonus, b_low_replans, b_efficiency, b_extra_cobblestone]
+    elif resolved_profile == "iron":
+        bonus_values = [b_iron_pickaxe, b_low_replans, b_efficiency, b_extra_iron]
     else:
         bonus_values = [b_iron_pickaxe, b_low_replans, b_efficiency, b_extra_diamonds]
     bonus_score = (sum(bonus_values) / len(bonus_values)) if bonus_enabled else 0.0
@@ -211,6 +240,9 @@ def compute_verifier_reward(
         "final_target_count": final_target_count,
         "required_diamonds": required_diamonds,
         "final_diamond_count": diamond_count,
+        "required_iron_ingots": required_iron_ingots,
+        "final_iron_ore_count": iron_ore_count,
+        "final_iron_ingot_count": iron_ingot_count,
         "m_logs": m_logs,
         "m_planks": m_planks,
         "m_sticks": m_sticks,
@@ -221,6 +253,9 @@ def compute_verifier_reward(
         "m_furnace": m_furnace,
         "m_goal_progress": m_goal_progress,
         "m_diamonds": m_diamonds,
+        "m_iron_ore": m_iron_ore,
+        "m_iron_ingot": m_iron_ingot,
+        "m_iron_goal": m_iron_goal,
         "m_cobblestone": m_cobblestone,
         "m_stone_goal": m_stone_goal,
         "milestone_score": milestone_score,
@@ -229,6 +264,7 @@ def compute_verifier_reward(
         "b_low_replans": b_low_replans,
         "b_efficiency": b_efficiency,
         "b_extra_diamonds": b_extra_diamonds,
+        "b_extra_iron": b_extra_iron,
         "b_extra_cobblestone": b_extra_cobblestone,
         "bonus_score": bonus_score,
         "rubric_score": rubric_score,
@@ -403,6 +439,9 @@ def run_campaign(cfg: CampaignConfig) -> int:
         "first_diamond_step",
         "required_diamonds",
         "final_diamond_count",
+        "required_iron_ingots",
+        "final_iron_ore_count",
+        "final_iron_ingot_count",
         "rubric_profile",
         "target_item",
         "required_target_count",
@@ -417,6 +456,9 @@ def run_campaign(cfg: CampaignConfig) -> int:
         "m_furnace",
         "m_goal_progress",
         "m_diamonds",
+        "m_iron_ore",
+        "m_iron_ingot",
+        "m_iron_goal",
         "m_cobblestone",
         "m_stone_goal",
         "milestone_score",
@@ -425,6 +467,7 @@ def run_campaign(cfg: CampaignConfig) -> int:
         "b_low_replans",
         "b_efficiency",
         "b_extra_diamonds",
+        "b_extra_iron",
         "b_extra_cobblestone",
         "bonus_score",
         "rubric_score",
@@ -599,7 +642,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--episode-cooldown-s", type=float, default=0.0)
     parser.add_argument("--continue-on-error", action="store_true")
     parser.add_argument("--disable-rubric-bonus", action="store_true")
-    parser.add_argument("--rubric-profile", choices=["auto", "diamond", "stone"], default="auto")
+    parser.add_argument("--rubric-profile", choices=["auto", "diamond", "stone", "iron"], default="auto")
 
     parser.add_argument("--discord-webhook-url", default="")
     parser.add_argument("--discord-min-interval-s", type=int, default=10)

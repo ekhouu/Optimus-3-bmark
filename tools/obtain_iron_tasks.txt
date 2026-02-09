@@ -1,0 +1,6 @@
+orchestrate to obtain 3 iron_ingot
+orchestrate to obtain 5 iron_ingot
+orchestrate to craft a furnace and obtain 3 iron_ingot
+orchestrate to obtain 8 cobblestone and then obtain 3 iron_ingot
+orchestrate to craft a stone_pickaxe and obtain 3 iron_ingot
+orchestrate to obtain 1 iron_pickaxe
