@@ -293,6 +293,8 @@ def run_rollout(cfg: RolloutConfig) -> int:
         action_text = (action_resp.get("response") or "").strip().lower()
         state = _http_json("GET", f"{cfg.base_url}/plan_state")
         final_state = state
+        objective_progress = state.get("objective_progress") if isinstance(state, dict) else None
+        objective_met = bool(isinstance(objective_progress, dict) and objective_progress.get("met"))
 
         sub_task_index = int(state.get("sub_task_index") or 0)
         plan_length = int(state.get("plan_length") or 0)
@@ -351,6 +353,8 @@ def run_rollout(cfg: RolloutConfig) -> int:
             "seconds_since_progress": sec_since_progress,
             "inventory_counts": inventory_counts,
             "diamond_count": diamond_count,
+            "objective_met": objective_met,
+            "objective_progress": objective_progress,
             "replanned": replanned,
             "replan_detail": replan_detail,
         }
@@ -362,6 +366,7 @@ def run_rollout(cfg: RolloutConfig) -> int:
             "plan_length": plan_length,
             "progress_ratio": round(progress_ratio, 6),
             "diamond_count": diamond_count,
+            "objective_met": int(objective_met),
             "seconds_since_progress": sec_since_progress if sec_since_progress is not None else "",
             "replanned": replanned,
         }
@@ -377,7 +382,7 @@ def run_rollout(cfg: RolloutConfig) -> int:
                 f"[rollout] step={step} progress={progress_ratio:.3f} diamonds={diamond_count} replans={replan_count}"
             )
 
-        if action_text == "success":
+        if action_text == "success" or objective_met:
             success = True
             break
 
@@ -392,6 +397,7 @@ def run_rollout(cfg: RolloutConfig) -> int:
                 "plan_length",
                 "progress_ratio",
                 "diamond_count",
+                "objective_met",
                 "seconds_since_progress",
                 "replanned",
             ],
@@ -411,6 +417,10 @@ def run_rollout(cfg: RolloutConfig) -> int:
         "final_plan_length": int(final_state.get("plan_length") or 0),
         "final_sub_task_index": int(final_state.get("sub_task_index") or 0),
         "final_seconds_since_progress": final_state.get("seconds_since_progress"),
+        "final_objective_progress": final_state.get("objective_progress"),
+        "final_objective_met": bool(
+            isinstance(final_state.get("objective_progress"), dict) and final_state.get("objective_progress", {}).get("met")
+        ),
         "final_inventory_counts": _ensure_inventory_counts(final_state),
         "completed_goal_items": completed_goal_items,
         "completed_goal_counts": completed_goal_counts,
