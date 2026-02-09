@@ -162,12 +162,22 @@ def run_rollout(cfg: RolloutConfig) -> int:
 
     notifier = DiscordNotifier(cfg.discord_webhook_url, cfg.discord_min_interval_s)
 
+    print(
+        f"[rollout] start task={cfg.task!r} max_steps={cfg.max_steps} "
+        f"replan_threshold={cfg.replan_threshold_seconds}s out_dir={cfg.out_dir}",
+        flush=True,
+    )
+
     if not cfg.skip_reset:
+        print(f"[rollout] reset device={cfg.device}", flush=True)
         _http_json("POST", f"{cfg.base_url}/reset", {"device": cfg.device})
+    else:
+        print("[rollout] skip_reset=true", flush=True)
 
     planning_payload = {"text": cfg.task, "task": "planning"}
     planning_resp = _http_json("POST", f"{cfg.base_url}/send_text", planning_payload)
     planning_text = planning_resp.get("response", "")
+    print(f"[rollout] planning_response={planning_text[:220]!r}", flush=True)
     _write_jsonl(
         events_path,
         {
@@ -218,6 +228,10 @@ def run_rollout(cfg: RolloutConfig) -> int:
                 replanned = 1
                 replan_count += 1
             replan_detail = replan_resp.get("detail")
+            print(
+                f"[rollout] replan_check step={step} replanned={bool(replanned)} detail={replan_detail!r}",
+                flush=True,
+            )
 
         event = {
             "ts": time.time(),
@@ -250,6 +264,11 @@ def run_rollout(cfg: RolloutConfig) -> int:
         metrics_rows.append(metrics_row)
 
         if step % 20 == 0:
+            print(
+                f"[rollout] step={step} progress={progress_ratio:.3f} "
+                f"sub_task={sub_task_index}/{plan_length} diamonds={diamond_count} replans={replan_count}",
+                flush=True,
+            )
             notifier.send(
                 f"[rollout] step={step} progress={progress_ratio:.3f} diamonds={diamond_count} replans={replan_count}"
             )
