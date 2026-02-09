@@ -16,6 +16,7 @@ import argparse
 import csv
 import json
 import random
+import re
 import statistics
 import sys
 import time
@@ -53,29 +54,111 @@ def _load_single_summary(episode_dir: Path) -> dict[str, Any]:
     return json.loads(summaries[-1].read_text(encoding="utf-8"))
 
 
-def compute_verifier_reward(summary: dict[str, Any]) -> dict[str, float]:
+def _required_diamond_count(task: str) -> int:
+    text = (task or "").lower()
+    if "diamond" not in text:
+        return 1
+    match = re.search(r"(\d+)\s+diamonds?", text)
+    if match:
+        try:
+            return max(1, int(match.group(1)))
+        except ValueError:
+            return 1
+    return 1
+
+
+def compute_verifier_reward(summary: dict[str, Any], task: str, bonus_enabled: bool = True) -> dict[str, float]:
     success = 1.0 if bool(summary.get("success")) else 0.0
     max_progress = float(summary.get("max_progress_ratio", 0.0) or 0.0)
     replan_count = float(summary.get("replan_count", 0.0) or 0.0)
     steps_taken = float(summary.get("steps_taken", 0.0) or 0.0)
     max_steps = float(summary.get("max_steps", 1.0) or 1.0)
     final_inventory_counts = summary.get("final_inventory_counts") or {}
+    completed_goal_items = set((summary.get("completed_goal_items") or []))
+    required_diamonds = float(_required_diamond_count(task))
     diamond_count = float(final_inventory_counts.get("diamond", 0.0) or 0.0)
+    final_plan_length = float(summary.get("final_plan_length", 0.0) or 0.0)
+    final_sub_task_index = float(summary.get("final_sub_task_index", 0.0) or 0.0)
     final_seconds_since_progress = summary.get("final_seconds_since_progress")
     stalled = 1.0 if (final_seconds_since_progress is not None and float(final_seconds_since_progress) >= 120.0) else 0.0
 
+    def _have_item(item: str) -> float:
+        if float(final_inventory_counts.get(item, 0.0) or 0.0) > 0:
+            return 1.0
+        if item in completed_goal_items:
+            return 1.0
+        return 0.0
+
+    m_crafting_table = _have_item("crafting_table")
+    m_wooden_pickaxe = _have_item("wooden_pickaxe")
+    m_stone_pickaxe = _have_item("stone_pickaxe")
+    m_furnace = _have_item("furnace")
+    m_iron = (
+        1.0
+        if (
+            _have_item("iron_ore") > 0
+            or _have_item("iron_ingot") > 0
+            or _have_item("iron_pickaxe") > 0
+            or float(final_inventory_counts.get("iron_ore", 0.0) or 0.0) > 0
+            or float(final_inventory_counts.get("iron_ingot", 0.0) or 0.0) > 0
+            or float(final_inventory_counts.get("iron_pickaxe", 0.0) or 0.0) > 0
+        )
+        else 0.0
+    )
+    m_goal_progress = (
+        1.0 if success > 0 else (1.0 if (final_plan_length > 0 and (final_sub_task_index / final_plan_length) >= 0.80) else 0.0)
+    )
+    m_diamonds = 1.0 if diamond_count >= required_diamonds or _have_item("diamond") > 0 else 0.0
+
+    milestone_values = [
+        m_crafting_table,
+        m_wooden_pickaxe,
+        m_stone_pickaxe,
+        m_iron,
+        m_furnace,
+        m_goal_progress,
+        m_diamonds,
+    ]
+    milestone_score = sum(milestone_values) / len(milestone_values)
+
+    b_iron_pickaxe = _have_item("iron_pickaxe")
+    b_low_replans = 1.0 if replan_count <= 1.0 else 0.0
+    b_efficiency = 1.0 if (steps_taken / max(max_steps, 1.0)) <= 0.70 else 0.0
+    b_extra_diamonds = 1.0 if diamond_count >= (required_diamonds + 1.0) else 0.0
+    bonus_values = [b_iron_pickaxe, b_low_replans, b_efficiency, b_extra_diamonds]
+    bonus_score = (sum(bonus_values) / len(bonus_values)) if bonus_enabled else 0.0
+
+    rubric_score = (0.85 * milestone_score + 0.15 * bonus_score) if bonus_enabled else milestone_score
+    efficiency_ratio = steps_taken / max(max_steps, 1.0)
+
     components = {
-        "success_reward": 1.00 * success,
-        "progress_reward": 0.60 * max_progress,
-        "diamond_bonus": 0.25 * min(1.0, diamond_count),
-        "efficiency_penalty": 0.10 * (steps_taken / max(max_steps, 1.0)),
+        "required_diamonds": required_diamonds,
+        "final_diamond_count": diamond_count,
+        "m_crafting_table": m_crafting_table,
+        "m_wooden_pickaxe": m_wooden_pickaxe,
+        "m_stone_pickaxe": m_stone_pickaxe,
+        "m_iron": m_iron,
+        "m_furnace": m_furnace,
+        "m_goal_progress": m_goal_progress,
+        "m_diamonds": m_diamonds,
+        "milestone_score": milestone_score,
+        "b_iron_pickaxe": b_iron_pickaxe,
+        "b_low_replans": b_low_replans,
+        "b_efficiency": b_efficiency,
+        "b_extra_diamonds": b_extra_diamonds,
+        "bonus_score": bonus_score,
+        "rubric_score": rubric_score,
+        "success_reward": 1.10 * success,
+        "progress_reward": 0.35 * max_progress,
+        "rubric_reward": 0.90 * rubric_score,
+        "efficiency_penalty": 0.08 * efficiency_ratio,
         "replan_penalty": 0.03 * replan_count,
         "stall_penalty": 0.12 * stalled,
     }
     reward = (
         components["success_reward"]
         + components["progress_reward"]
-        + components["diamond_bonus"]
+        + components["rubric_reward"]
         - components["efficiency_penalty"]
         - components["replan_penalty"]
         - components["stall_penalty"]
@@ -92,6 +175,9 @@ def build_aggregate(rows: list[dict[str, Any]]) -> dict[str, Any]:
     progress_values = [float(r.get("max_progress_ratio", 0.0) or 0.0) for r in rows]
     steps_values = [float(r.get("steps_taken", 0.0) or 0.0) for r in rows]
     reward_values = [float(r.get("reward", 0.0) or 0.0) for r in rows]
+    rubric_values = [float(r.get("rubric_score", 0.0) or 0.0) for r in rows]
+    milestone_values = [float(r.get("milestone_score", 0.0) or 0.0) for r in rows]
+    bonus_values = [float(r.get("bonus_score", 0.0) or 0.0) for r in rows]
     replan_values = [float(r.get("replan_count", 0.0) or 0.0) for r in rows]
     per_task: dict[str, list[int]] = {}
     for row in rows:
@@ -103,6 +189,9 @@ def build_aggregate(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "mean_max_progress_ratio": round(statistics.mean(progress_values), 6),
         "mean_steps": round(statistics.mean(steps_values), 3),
         "mean_reward": round(statistics.mean(reward_values), 6),
+        "mean_rubric_score": round(statistics.mean(rubric_values), 6),
+        "mean_milestone_score": round(statistics.mean(milestone_values), 6),
+        "mean_bonus_score": round(statistics.mean(bonus_values), 6),
         "mean_replans": round(statistics.mean(replan_values), 4),
         "task_success_rate": {task: round(sum(vals) / len(vals), 6) for task, vals in sorted(per_task.items())},
     }
@@ -164,6 +253,7 @@ class CampaignConfig:
     seed: int
     episode_cooldown_s: float
     continue_on_error: bool
+    rubric_bonus_enabled: bool
     discord_webhook_url: str | None
     discord_min_interval_s: int
     discord_timeout_s: int
@@ -221,10 +311,26 @@ def run_campaign(cfg: CampaignConfig) -> int:
         "max_progress_ratio",
         "replan_count",
         "first_diamond_step",
+        "required_diamonds",
+        "final_diamond_count",
+        "m_crafting_table",
+        "m_wooden_pickaxe",
+        "m_stone_pickaxe",
+        "m_iron",
+        "m_furnace",
+        "m_goal_progress",
+        "m_diamonds",
+        "milestone_score",
+        "b_iron_pickaxe",
+        "b_low_replans",
+        "b_efficiency",
+        "b_extra_diamonds",
+        "bonus_score",
+        "rubric_score",
         "reward",
         "success_reward",
         "progress_reward",
-        "diamond_bonus",
+        "rubric_reward",
         "efficiency_penalty",
         "replan_penalty",
         "stall_penalty",
@@ -293,7 +399,7 @@ def run_campaign(cfg: CampaignConfig) -> int:
                 if not cfg.continue_on_error:
                     raise
 
-            reward = compute_verifier_reward(summary)
+            reward = compute_verifier_reward(summary, task=task, bonus_enabled=cfg.rubric_bonus_enabled)
             row = {
                 "episode": episode_idx,
                 "task": task,
@@ -303,10 +409,26 @@ def run_campaign(cfg: CampaignConfig) -> int:
                 "max_progress_ratio": float(summary.get("max_progress_ratio", 0.0) or 0.0),
                 "replan_count": int(summary.get("replan_count", 0) or 0),
                 "first_diamond_step": summary.get("first_diamond_step"),
+                "required_diamonds": reward["required_diamonds"],
+                "final_diamond_count": reward["final_diamond_count"],
+                "m_crafting_table": reward["m_crafting_table"],
+                "m_wooden_pickaxe": reward["m_wooden_pickaxe"],
+                "m_stone_pickaxe": reward["m_stone_pickaxe"],
+                "m_iron": reward["m_iron"],
+                "m_furnace": reward["m_furnace"],
+                "m_goal_progress": reward["m_goal_progress"],
+                "m_diamonds": reward["m_diamonds"],
+                "milestone_score": reward["milestone_score"],
+                "b_iron_pickaxe": reward["b_iron_pickaxe"],
+                "b_low_replans": reward["b_low_replans"],
+                "b_efficiency": reward["b_efficiency"],
+                "b_extra_diamonds": reward["b_extra_diamonds"],
+                "bonus_score": reward["bonus_score"],
+                "rubric_score": reward["rubric_score"],
                 "reward": reward["reward"],
                 "success_reward": reward["success_reward"],
                 "progress_reward": reward["progress_reward"],
-                "diamond_bonus": reward["diamond_bonus"],
+                "rubric_reward": reward["rubric_reward"],
                 "efficiency_penalty": reward["efficiency_penalty"],
                 "replan_penalty": reward["replan_penalty"],
                 "stall_penalty": reward["stall_penalty"],
@@ -390,6 +512,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--skip-reset-between", action="store_true")
     parser.add_argument("--episode-cooldown-s", type=float, default=0.0)
     parser.add_argument("--continue-on-error", action="store_true")
+    parser.add_argument("--disable-rubric-bonus", action="store_true")
 
     parser.add_argument("--discord-webhook-url", default="")
     parser.add_argument("--discord-min-interval-s", type=int, default=10)
@@ -424,6 +547,7 @@ def main() -> int:
         seed=args.seed,
         episode_cooldown_s=args.episode_cooldown_s,
         continue_on_error=args.continue_on_error,
+        rubric_bonus_enabled=(not args.disable_rubric_bonus),
         discord_webhook_url=(args.discord_webhook_url or None),
         discord_min_interval_s=args.discord_min_interval_s,
         discord_timeout_s=args.discord_timeout_s,

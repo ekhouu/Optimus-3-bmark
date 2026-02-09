@@ -268,6 +268,9 @@ def run_rollout(cfg: RolloutConfig) -> int:
     notifier.send(f"[rollout] planning submitted task={cfg.task!r}", force=True)
 
     prev_sub_task_index = None
+    prev_active_goal_item: str | None = None
+    completed_goal_items: list[str] = []
+    completed_goal_counts: dict[str, int] = {}
     first_diamond_step = None
     max_progress_ratio = 0.0
     replan_count = 0
@@ -294,6 +297,18 @@ def run_rollout(cfg: RolloutConfig) -> int:
 
         did_progress = prev_sub_task_index is not None and sub_task_index > prev_sub_task_index
         prev_sub_task_index = sub_task_index
+        completed_goal_item = None
+        if did_progress and prev_active_goal_item:
+            completed_goal_item = prev_active_goal_item
+            completed_goal_items.append(completed_goal_item)
+            completed_goal_counts[completed_goal_item] = completed_goal_counts.get(completed_goal_item, 0) + 1
+
+        active_goal = state.get("active_goal")
+        if isinstance(active_goal, dict) and active_goal.get("item"):
+            prev_active_goal_item = str(active_goal.get("item"))
+        elif sub_task_index >= plan_length:
+            prev_active_goal_item = None
+
         sec_since_progress = state.get("seconds_since_progress")
         replanned = 0
         replan_detail = None
@@ -323,7 +338,8 @@ def run_rollout(cfg: RolloutConfig) -> int:
             "progress_ratio": progress_ratio,
             "did_progress": bool(did_progress),
             "active_task": state.get("active_task"),
-            "active_goal": state.get("active_goal"),
+            "active_goal": active_goal,
+            "completed_goal_item": completed_goal_item,
             "seconds_since_progress": sec_since_progress,
             "inventory_counts": inventory_counts,
             "diamond_count": diamond_count,
@@ -388,6 +404,8 @@ def run_rollout(cfg: RolloutConfig) -> int:
         "final_sub_task_index": int(final_state.get("sub_task_index") or 0),
         "final_seconds_since_progress": final_state.get("seconds_since_progress"),
         "final_inventory_counts": _ensure_inventory_counts(final_state),
+        "completed_goal_items": completed_goal_items,
+        "completed_goal_counts": completed_goal_counts,
         "events_path": str(events_path),
         "metrics_path": str(metrics_path),
         "plot_path": str(plot_path) if plot_generated else None,

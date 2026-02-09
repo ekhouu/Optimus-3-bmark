@@ -12,11 +12,17 @@ def test_compute_verifier_reward_shapes_expected():
         "steps_taken": 400,
         "max_steps": 1200,
         "final_inventory_counts": {"diamond": 1},
+        "completed_goal_items": ["crafting_table", "wooden_pickaxe", "stone_pickaxe", "furnace", "iron_ingot"],
+        "final_plan_length": 12,
+        "final_sub_task_index": 10,
         "final_seconds_since_progress": 30,
     }
-    reward = compute_verifier_reward(summary)
+    reward = compute_verifier_reward(summary, task="obtain diamond")
     assert reward["success_reward"] > 0
-    assert reward["diamond_bonus"] > 0
+    assert reward["m_diamonds"] > 0
+    assert reward["m_furnace"] > 0
+    assert reward["milestone_score"] > 0
+    assert reward["rubric_reward"] > 0
     assert reward["replan_penalty"] > 0
     assert reward["reward"] > 0
 

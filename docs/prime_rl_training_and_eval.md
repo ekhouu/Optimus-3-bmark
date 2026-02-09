@@ -111,6 +111,32 @@ Campaign outputs:
 
 This is directly graphable and follows a Prime-style verifier record layout (`success`, `max_progress_ratio`, `replan_count`, shaped reward components).
 
+### Milestone Rubric (diamond runs)
+Verifier records now include explicit rubric milestones:
+- `m_crafting_table`
+- `m_wooden_pickaxe`
+- `m_stone_pickaxe`
+- `m_iron` (iron ore/ingot/pickaxe evidence)
+- `m_furnace`
+- `m_goal_progress` (deep plan progress)
+- `m_diamonds` (task-aware required diamond count)
+
+Bonus section (enabled by default):
+- `b_iron_pickaxe`
+- `b_low_replans`
+- `b_efficiency`
+- `b_extra_diamonds`
+
+Scores:
+- `milestone_score` (core rubric)
+- `bonus_score` (optional bonus block)
+- `rubric_score` (combined)
+
+Disable bonus block:
+```bash
+python tools/prime_rl_campaign.py ... --disable-rubric-bonus
+```
+
 Discord support:
 - periodic text updates per episode
 - optional artifact upload to webhook (plot + aggregate json + csv)
