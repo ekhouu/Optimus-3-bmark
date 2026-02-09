@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import random
+import re
 import time
 import uuid
 from datetime import datetime
@@ -85,6 +86,8 @@ redstone_ore_count = 0
 planning_query = None
 last_goal_completion_ts = None
 last_replan_ts = None
+orchestrator_mode = False
+orchestrator_objective = None
 
 
 REPO_ROOT = Path(__file__).resolve().parent
@@ -130,6 +133,9 @@ AUTO_REPLAN_ENABLED = _env_or_default("OPTIMUS_AUTO_REPLAN", "0") == "1"
 REPLAN_NO_PROGRESS_SECONDS = int(_env_or_default("OPTIMUS_REPLAN_NO_PROGRESS_SECONDS", "300"))
 REPLAN_MIN_INTERVAL_SECONDS = int(_env_or_default("OPTIMUS_REPLAN_MIN_INTERVAL_SECONDS", "30"))
 REPLAN_ON_GOAL_COMPLETION = _env_or_default("OPTIMUS_REPLAN_ON_GOAL_COMPLETION", "0") == "1"
+ORCHESTRATOR_NO_PROGRESS_SECONDS = int(_env_or_default("OPTIMUS_ORCHESTRATOR_NO_PROGRESS_SECONDS", "120"))
+ORCHESTRATOR_REPLAN_ON_GOAL_COMPLETION = _env_or_default("OPTIMUS_ORCHESTRATOR_REPLAN_ON_GOAL_COMPLETION", "1") == "1"
+ORCHESTRATOR_FORCE_REPLAN_ON_PLAN_END = _env_or_default("OPTIMUS_ORCHESTRATOR_FORCE_REPLAN_ON_PLAN_END", "1") == "1"
 RUN_LOG_DIR = Path(_env_or_default("OPTIMUS_RUN_LOG_DIR", str(REPO_ROOT / "outputs" / "server_traces")))
 LLM_TRACE_LOG_PATH = Path(_env_or_default("OPTIMUS_LLM_TRACE_LOG", str(RUN_LOG_DIR / "llm_trace.jsonl")))
 
@@ -311,6 +317,71 @@ def _state_context_text(info: Dict[str, Any] | None) -> str:
     return f"inventory={inventory_text}"
 
 
+def _strip_orchestrate_prefix(text: str) -> str:
+    raw = text.strip()
+    lowered = raw.lower()
+    for prefix in ("orchestrate to ", "orchestrate:", "orchestrate "):
+        if lowered.startswith(prefix):
+            cleaned = raw[len(prefix) :].strip()
+            if cleaned:
+                return cleaned
+    return raw
+
+
+def _infer_orchestrator_objective(task_text: str) -> Dict[str, Any] | None:
+    lower = task_text.lower().strip()
+    item = None
+    count = 1
+    count_item_match = re.search(r"\b(\d+)\s+([a-z_]+)\b", lower)
+    if count_item_match:
+        count = max(1, int(count_item_match.group(1)))
+        item = count_item_match.group(2).strip().lower()
+
+    if item is None:
+        for token in (
+            "diamond",
+            "diamonds",
+            "iron_ingot",
+            "iron_ore",
+            "furnace",
+            "stone_pickaxe",
+            "wooden_pickaxe",
+            "crafting_table",
+            "redstone",
+            "gold_ingot",
+            "gold_ore",
+            "cobblestone",
+            "logs",
+            "log",
+            "planks",
+            "stick",
+        ):
+            if token in lower:
+                item = token
+                break
+    if not item:
+        return None
+    if item == "diamonds":
+        item = "diamond"
+    return {"item": item, "count": count, "raw": task_text}
+
+
+def _objective_progress(info: Dict[str, Any] | None, objective: Dict[str, Any] | None) -> tuple[int, int]:
+    if not objective:
+        return 0, 0
+    target_item = str(objective.get("item", "")).strip().lower()
+    target_count = max(1, int(objective.get("count", 1)))
+    aggregate = _inventory_aggregate(info)
+    singular = target_item[:-1] if target_item.endswith("s") else target_item
+    have_count = max(_count_inventory_like(aggregate, target_item), _count_inventory_like(aggregate, singular))
+    return have_count, target_count
+
+
+def _objective_met(info: Dict[str, Any] | None, objective: Dict[str, Any] | None) -> bool:
+    have_count, target_count = _objective_progress(info, objective)
+    return target_count > 0 and have_count >= target_count
+
+
 def _plan_length() -> int:
     if not sub_tasks or not goals:
         return 0
@@ -432,7 +503,8 @@ async def websocket_observations(websocket: WebSocket):
         while True:
             await websocket.receive_text()
     except WebSocketDisconnect:
-        connected_clients.remove(websocket)
+        if websocket in connected_clients:
+            connected_clients.remove(websocket)
 
 
 @app.on_event("startup")
@@ -468,6 +540,7 @@ async def reset(reset_data: ResetData):
     """
     global env, model, current_obs, session_start_time, session_id, helper, current_info
     global sub_tasks, goals, sub_task_index, planning_query, last_goal_completion_ts, last_replan_ts
+    global orchestrator_mode, orchestrator_objective
 
     try:
         # Close existing environment if one exists
@@ -503,6 +576,8 @@ async def reset(reset_data: ResetData):
         planning_query = None
         last_goal_completion_ts = None
         last_replan_ts = None
+        orchestrator_mode = False
+        orchestrator_objective = None
         helper = {"craft": CraftWorker(env), "smelt": SmeltWorker(env), "equip": EquipWorker(env)}
         if not model:
             logger.info(
@@ -623,6 +698,7 @@ async def send_text(text_data: TextData):
     """
     global env, model, current_obs, sub_tasks, goals, sub_task_index, last_action, current_info
     global planning_query, last_goal_completion_ts, last_replan_ts
+    global orchestrator_mode, orchestrator_objective
     if not env or model is None:
         raise HTTPException(status_code=400, detail="Environment not initialized. Call /reset first.")
 
@@ -644,22 +720,31 @@ async def send_text(text_data: TextData):
         else:
             with torch.no_grad():
                 print(f"Task type: {task_type}")
-                if task_type == "planning":
-                    planning_query = user_text
+                is_orchestrate_request = (task_type == "orchestrate") or user_text.lower().startswith("orchestrate")
+                if task_type == "planning" or task_type == "orchestrate":
+                    planning_text = _strip_orchestrate_prefix(user_text) if is_orchestrate_request else user_text
+                    planning_text = planning_text.strip() if planning_text else user_text
+                    planning_query = planning_text
+                    orchestrator_mode = is_orchestrate_request
+                    orchestrator_objective = (
+                        _infer_orchestrator_objective(planning_text) if orchestrator_mode else None
+                    )
                     inv_agg = _inventory_aggregate(current_info)
                     from_scratch = len(inv_agg) == 0
                     state_context = _state_context_text(current_info) if not from_scratch else None
                     response_text, _sub_plans, _goals = model.plan(
-                        user_text,
+                        planning_text,
                         state_context=state_context,
                         from_scratch=from_scratch,
                     )
                     _log_llm_event(
-                        "planning",
+                        "orchestration_plan" if orchestrator_mode else "planning",
                         {
-                            "planning_query": user_text,
+                            "planning_query": planning_text,
                             "from_scratch": from_scratch,
                             "state_context": state_context,
+                            "orchestrator_mode": orchestrator_mode,
+                            "orchestrator_objective": orchestrator_objective,
                         },
                         response_text,
                         {"plan_length": min(len(_sub_plans), len(_goals))},
@@ -675,13 +760,31 @@ async def send_text(text_data: TextData):
                     response_text = model.answer(user_text, img)
                 elif task_type == "action":
                     if not sub_tasks or not goals:
-                        response_text = "No active plan. Run planning first."
+                        if orchestrator_mode and planning_query:
+                            replanned, _ = _try_replan("orchestrator_bootstrap", force=True)
+                            if replanned and _plan_length() > 0:
+                                response_text = sub_tasks[sub_task_index]
+                            else:
+                                response_text = "No active plan. Run planning first."
+                        else:
+                            response_text = "No active plan. Run planning first."
                     else:
                         plan_length = min(len(sub_tasks), len(goals))
                         if plan_length == 0:
                             response_text = "No active plan. Run planning first."
                         elif sub_task_index >= plan_length:
-                            response_text = "success"
+                            if (
+                                orchestrator_mode
+                                and ORCHESTRATOR_FORCE_REPLAN_ON_PLAN_END
+                                and not _objective_met(current_info, orchestrator_objective)
+                            ):
+                                replanned, _ = _try_replan("orchestrator_plan_exhausted", force=True)
+                                if replanned and _plan_length() > 0:
+                                    response_text = sub_tasks[sub_task_index]
+                                else:
+                                    response_text = "orchestrator_waiting_for_new_plan"
+                            else:
+                                response_text = "success"
                         else:
                             redirect = _maybe_redirect_craft_goal(sub_tasks[sub_task_index], goals[sub_task_index], current_info)
                             if redirect is not None:
@@ -709,18 +812,43 @@ async def send_text(text_data: TextData):
                             current_obs = obs
                             current_info = info
                             if AUTO_REPLAN_ENABLED:
-                                if check and REPLAN_ON_GOAL_COMPLETION:
-                                    replanned, _ = _try_replan("goal_completed", force=False)
-                                    if replanned:
-                                        plan_length = _plan_length()
-                                elif not check:
-                                    replanned, _ = _try_replan("no_progress", force=False)
-                                    if replanned:
-                                        plan_length = _plan_length()
+                                if orchestrator_mode:
+                                    if check and ORCHESTRATOR_REPLAN_ON_GOAL_COMPLETION:
+                                        replanned, _ = _try_replan("goal_completed", force=False)
+                                        if replanned:
+                                            plan_length = _plan_length()
+                                    elif not check:
+                                        replanned, _ = _try_replan(
+                                            "no_progress",
+                                            force=False,
+                                            threshold_seconds=ORCHESTRATOR_NO_PROGRESS_SECONDS,
+                                        )
+                                        if replanned:
+                                            plan_length = _plan_length()
+                                else:
+                                    if check and REPLAN_ON_GOAL_COMPLETION:
+                                        replanned, _ = _try_replan("goal_completed", force=False)
+                                        if replanned:
+                                            plan_length = _plan_length()
+                                    elif not check:
+                                        replanned, _ = _try_replan("no_progress", force=False)
+                                        if replanned:
+                                            plan_length = _plan_length()
                             if sub_task_index < plan_length:
                                 response_text = sub_tasks[sub_task_index]
                             else:
-                                response_text = "success"
+                                if (
+                                    orchestrator_mode
+                                    and ORCHESTRATOR_FORCE_REPLAN_ON_PLAN_END
+                                    and not _objective_met(current_info, orchestrator_objective)
+                                ):
+                                    replanned, _ = _try_replan("orchestrator_plan_exhausted", force=True)
+                                    if replanned and _plan_length() > 0:
+                                        response_text = sub_tasks[sub_task_index]
+                                    else:
+                                        response_text = "orchestrator_waiting_for_new_plan"
+                                else:
+                                    response_text = "success"
                 elif task_type == "grounding":
                     response_text = model.grounding(user_text, img)
                 else:
@@ -797,6 +925,7 @@ async def plan_state():
     seconds_since_progress = None
     if last_goal_completion_ts is not None:
         seconds_since_progress = now - last_goal_completion_ts
+    objective_have, objective_need = _objective_progress(current_info, orchestrator_objective)
     return {
         "status": "success",
         "planning_query": planning_query,
@@ -809,6 +938,13 @@ async def plan_state():
         "last_replan_ts": last_replan_ts,
         "inventory_summary": _inventory_summary_text(current_info),
         "inventory_counts": inventory_counts,
+        "orchestrator_mode": orchestrator_mode,
+        "orchestrator_objective": orchestrator_objective,
+        "objective_progress": {
+            "have": objective_have,
+            "need": objective_need,
+            "met": objective_need > 0 and objective_have >= objective_need,
+        },
     }
 
 

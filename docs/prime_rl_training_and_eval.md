@@ -73,7 +73,8 @@ This generates `teacher_sft.jsonl` and trains a LoRA adapter in:
 ```bash
 python tools/prime_rl_rollout_logger.py \
   --base-url http://127.0.0.1:9500 \
-  --task "obtain diamond" \
+  --task "orchestrate to obtain diamond" \
+  --planning-task-type orchestrate \
   --out-dir /workspace/outputs/prime_rollouts \
   --max-steps 1200 \
   --replan-threshold-seconds 300 \
@@ -91,6 +92,7 @@ Outputs per run:
 python tools/prime_rl_campaign.py \
   --base-url http://127.0.0.1:9500 \
   --tasks-file tools/mine_diamonds_tasks.txt \
+  --planning-task-type orchestrate \
   --episodes 20 \
   --max-steps 1200 \
   --replan-threshold-seconds 120 \

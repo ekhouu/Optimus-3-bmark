@@ -244,6 +244,7 @@ class CampaignConfig:
     tasks: list[str]
     episodes: int
     out_dir: Path
+    planning_task_type: str
     max_steps: int
     replan_threshold_seconds: int
     step_sleep_seconds: float
@@ -360,6 +361,7 @@ def run_campaign(cfg: CampaignConfig) -> int:
                 base_url=cfg.base_url,
                 task=task,
                 out_dir=episode_dir,
+                planning_task_type=cfg.planning_task_type,
                 max_steps=cfg.max_steps,
                 replan_threshold_seconds=cfg.replan_threshold_seconds,
                 step_sleep_seconds=cfg.step_sleep_seconds,
@@ -505,6 +507,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--task-mode", choices=["random", "sequential"], default="random")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--out-dir", default="/workspace/outputs/prime_campaigns")
+    parser.add_argument("--planning-task-type", choices=["planning", "orchestrate"], default="planning")
     parser.add_argument("--max-steps", type=int, default=1200)
     parser.add_argument("--replan-threshold-seconds", type=int, default=120)
     parser.add_argument("--step-sleep-seconds", type=float, default=0.4)
@@ -538,6 +541,7 @@ def main() -> int:
         tasks=tasks,
         episodes=args.episodes,
         out_dir=Path(args.out_dir),
+        planning_task_type=args.planning_task_type,
         max_steps=args.max_steps,
         replan_threshold_seconds=args.replan_threshold_seconds,
         step_sleep_seconds=args.step_sleep_seconds,

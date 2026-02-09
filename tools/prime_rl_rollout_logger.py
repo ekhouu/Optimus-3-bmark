@@ -141,6 +141,7 @@ class RolloutConfig:
     base_url: str
     task: str
     out_dir: Path
+    planning_task_type: str = "planning"
     max_steps: int = 1200
     replan_threshold_seconds: int = 300
     step_sleep_seconds: float = 0.2
@@ -259,7 +260,7 @@ def run_rollout(cfg: RolloutConfig) -> int:
     else:
         print("[rollout] skip_reset=true", flush=True)
 
-    planning_payload = {"text": cfg.task, "task": "planning"}
+    planning_payload = {"text": cfg.task, "task": cfg.planning_task_type}
     planning_resp = _http_json("POST", f"{cfg.base_url}/send_text", planning_payload)
     planning_text = planning_resp.get("response", "")
     print(f"[rollout] planning_response={planning_text[:220]!r}", flush=True)
@@ -438,6 +439,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Prime-style rollout logger for Optimus mine-diamond runs.")
     parser.add_argument("--base-url", default="http://127.0.0.1:9500")
     parser.add_argument("--task", default="obtain diamond")
+    parser.add_argument("--planning-task-type", choices=["planning", "orchestrate"], default="planning")
     parser.add_argument("--out-dir", default="outputs/prime_rollouts")
     parser.add_argument("--max-steps", type=int, default=1200)
     parser.add_argument("--replan-threshold-seconds", type=int, default=300)
@@ -460,6 +462,7 @@ def main() -> int:
         base_url=args.base_url.rstrip("/"),
         task=args.task,
         out_dir=Path(args.out_dir),
+        planning_task_type=args.planning_task_type,
         max_steps=args.max_steps,
         replan_threshold_seconds=args.replan_threshold_seconds,
         step_sleep_seconds=args.step_sleep_seconds,
