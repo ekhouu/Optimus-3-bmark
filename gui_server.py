@@ -523,6 +523,7 @@ def _plan_length() -> int:
 
 def _try_replan(trigger: str, force: bool = False, threshold_seconds: int | None = None) -> tuple[bool, str]:
     global sub_tasks, goals, sub_task_index, planning_query, last_goal_completion_ts, last_replan_ts
+    global orchestrator_mode, orchestrator_objective
 
     if model is None:
         return False, "model_not_initialized"
@@ -539,19 +540,45 @@ def _try_replan(trigger: str, force: bool = False, threshold_seconds: int | None
                 return False, "below_no_progress_threshold"
 
     state_context = _state_context_text(current_info)
+    request_payload = {
+        "planning_query": planning_query,
+        "trigger": trigger,
+        "force": force,
+        "state_context": state_context,
+        "threshold_seconds": threshold,
+    }
     response_text, _sub_plans, _goals = model.plan(planning_query, state_context=state_context, from_scratch=False)
     _sub_plans, _goals, plan_stats = _sanitize_plan_steps(_sub_plans, _goals, current_info)
+
     if not _sub_plans or not _goals:
-        return False, "empty_replan"
+        fallback_used = False
+        if orchestrator_mode and orchestrator_objective and not _objective_met(current_info, orchestrator_objective):
+            obj_item = _normalize_item_name(orchestrator_objective.get("item", ""))
+            have_count, need_count = _objective_progress(current_info, orchestrator_objective)
+            remaining = max(1, need_count - have_count)
+            fallback_task, fallback_goal = _prereq_task(obj_item, remaining)
+            _sub_plans = [fallback_task]
+            _goals = [fallback_goal]
+            fallback_used = True
+            plan_stats["fallback_used"] = 1
+            plan_stats["fallback_task"] = fallback_task
+            plan_stats["fallback_goal"] = fallback_goal
+
+        if not fallback_used:
+            # Avoid replan spam when parser/model returns unusable output.
+            last_replan_ts = now
+            _log_llm_event(
+                "replan_empty",
+                request_payload,
+                response_text,
+                {**plan_stats, "detail": "empty_replan"},
+            )
+            return False, "empty_replan"
+
+    event_type = "replan_fallback" if plan_stats.get("fallback_used") else "replan"
     _log_llm_event(
-        "replan",
-        {
-            "planning_query": planning_query,
-            "trigger": trigger,
-            "force": force,
-            "state_context": state_context,
-            "threshold_seconds": threshold,
-        },
+        event_type,
+        request_payload,
         response_text,
         plan_stats,
     )
