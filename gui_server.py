@@ -811,7 +811,7 @@ async def send_text(text_data: TextData):
                                 last_goal_completion_ts = time.time()
                             current_obs = obs
                             current_info = info
-                            if AUTO_REPLAN_ENABLED:
+                            if AUTO_REPLAN_ENABLED or orchestrator_mode:
                                 if orchestrator_mode:
                                     if check and ORCHESTRATOR_REPLAN_ON_GOAL_COMPLETION:
                                         replanned, _ = _try_replan("goal_completed", force=False)
