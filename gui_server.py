@@ -402,7 +402,8 @@ async def broadcast_obs(base64_png: str):
         except WebSocketDisconnect:
             disconnected.append(ws)
     for ws in disconnected:
-        connected_clients.remove(ws)
+        if ws in connected_clients:
+            connected_clients.remove(ws)
 
 
 @app.post("/pause")
