@@ -141,6 +141,27 @@ STREAM_OBS_EVERY_N = max(1, int(_env_or_default("OPTIMUS_STREAM_OBS_EVERY_N", "1
 RUN_LOG_DIR = Path(_env_or_default("OPTIMUS_RUN_LOG_DIR", str(REPO_ROOT / "outputs" / "server_traces")))
 LLM_TRACE_LOG_PATH = Path(_env_or_default("OPTIMUS_LLM_TRACE_LOG", str(RUN_LOG_DIR / "llm_trace.jsonl")))
 stream_obs_counter = 0
+IMPOSSIBLE_CRAFT_MINE_ITEMS = {
+    "cobblestone",
+    "stone",
+    "iron_ore",
+    "gold_ore",
+    "diamond",
+    "redstone",
+    "coal",
+    "sand",
+    "dirt",
+    "gravel",
+}
+ITEM_ALIASES = {
+    "log": "logs",
+    "logs": "logs",
+    "plank": "planks",
+    "planks": "planks",
+    "sticks": "stick",
+    "diamonds": "diamond",
+    "cobblestones": "cobblestone",
+}
 
 
 def _append_jsonl(path: Path, row: Dict[str, Any]) -> None:
@@ -204,8 +225,109 @@ def _count_inventory_like(aggregate: Dict[str, int], needle: str) -> int:
     return sum(count for name, count in aggregate.items() if needle in name.lower())
 
 
+def _normalize_item_name(raw: Any) -> str:
+    item = str(raw or "").strip().lower()
+    return ITEM_ALIASES.get(item, item)
+
+
+def _goal_target_count(goal: Dict[str, Any]) -> int:
+    try:
+        count = int(goal.get("count", 1))
+    except Exception:
+        count = 1
+    return max(1, min(count, 256))
+
+
+def _goal_inventory_count(item: str, info: Dict[str, Any] | None) -> int:
+    aggregate = _inventory_aggregate(info)
+    item = _normalize_item_name(item)
+    if item == "logs":
+        return _count_inventory_like(aggregate, "log")
+    if item == "planks":
+        return _count_inventory_like(aggregate, "plank")
+    if item == "stick":
+        return _count_inventory_like(aggregate, "stick")
+    return max(int(aggregate.get(item, 0)), _count_inventory_like(aggregate, item))
+
+
+def _goal_satisfied(goal: Dict[str, Any], info: Dict[str, Any] | None) -> bool:
+    item = _normalize_item_name(goal.get("item", ""))
+    if not item:
+        return False
+    count = _goal_target_count(goal)
+    return _goal_inventory_count(item, info) >= count
+
+
+def _rewrite_impossible_goal(task_text: str, goal: Dict[str, Any]) -> tuple[str, Dict[str, Any], str] | None:
+    item = _normalize_item_name(goal.get("item", ""))
+    count = _goal_target_count(goal)
+    step = int(goal.get("step", 0) or 0)
+    lower_task = task_text.lower()
+    normalized_goal = {"step": step, "count": count, "item": item}
+
+    if "craft" in lower_task:
+        if item in IMPOSSIBLE_CRAFT_MINE_ITEMS:
+            return f"dig down and mine {count} {item}", normalized_goal, "craft_to_mine"
+        if item == "logs":
+            normalized_goal["item"] = "logs"
+            return f"chop trees to get {count} logs", normalized_goal, "craft_to_chop"
+        if item == "iron_ingot":
+            return f"smelt {count} iron_ingot", normalized_goal, "craft_to_smelt"
+    return None
+
+
+def _sanitize_plan_steps(
+    raw_tasks: list[str],
+    raw_goals: list[dict],
+    info: Dict[str, Any] | None,
+) -> tuple[list[str], list[dict], Dict[str, int]]:
+    n = min(len(raw_tasks or []), len(raw_goals or []))
+    sanitized_tasks: list[str] = []
+    sanitized_goals: list[dict] = []
+    corrections = 0
+    skipped_satisfied = 0
+    skipped_duplicates = 0
+    last_key: tuple[str, str, int] | None = None
+
+    for i in range(n):
+        raw_task = str(raw_tasks[i] or "").strip()
+        raw_goal = raw_goals[i] if isinstance(raw_goals[i], dict) else {}
+        item = _normalize_item_name(raw_goal.get("item", ""))
+        count = _goal_target_count(raw_goal)
+        step = int(raw_goal.get("step", i + 1) or (i + 1))
+        task = raw_task or f"obtain {count} {item}".strip()
+        goal = {"step": step, "count": count, "item": item}
+
+        rewritten = _rewrite_impossible_goal(task, goal)
+        if rewritten is not None:
+            task, goal, _ = rewritten
+            corrections += 1
+
+        if goal["item"] and _goal_satisfied(goal, info):
+            skipped_satisfied += 1
+            continue
+
+        dedupe_key = (task.lower(), goal["item"], goal["count"])
+        if dedupe_key == last_key:
+            skipped_duplicates += 1
+            continue
+        last_key = dedupe_key
+
+        sanitized_tasks.append(task)
+        sanitized_goals.append(goal)
+
+    stats = {
+        "raw_plan_length": n,
+        "sanitized_plan_length": len(sanitized_tasks),
+        "sanitized_corrections": corrections,
+        "sanitized_skipped_satisfied": skipped_satisfied,
+        "sanitized_skipped_duplicates": skipped_duplicates,
+    }
+    return sanitized_tasks, sanitized_goals, stats
+
+
 def _required_count_for_craft_prereq(item: str, count: int, aggregate: Dict[str, int]) -> tuple[str, int] | None:
-    item = item.lower()
+    item = _normalize_item_name(item)
     if item == "planks":
         need_logs = (count + 3) // 4
         have_logs = _count_inventory_like(aggregate, "log")
@@ -281,6 +403,7 @@ def _required_count_for_craft_prereq(item: str, count: int, aggregate: Dict[str,
 
 
 def _prereq_task(goal_item: str, goal_count: int) -> tuple[str, Dict[str, Any]]:
+    goal_item = _normalize_item_name(goal_item)
     if goal_item == "logs":
         return f"chop trees to get {goal_count} logs", {"step": 0, "count": goal_count, "item": "logs"}
     if goal_item == "planks":
@@ -289,6 +412,8 @@ def _prereq_task(goal_item: str, goal_count: int) -> tuple[str, Dict[str, Any]]:
         return f"craft {goal_count} stick", {"step": 0, "count": goal_count, "item": "stick"}
     if goal_item == "cobblestone":
         return f"dig down and mine {goal_count} cobblestone", {"step": 0, "count": goal_count, "item": "cobblestone"}
+    if goal_item in {"diamond", "redstone", "iron_ore", "gold_ore", "coal"}:
+        return f"dig down and mine {goal_count} {goal_item}", {"step": 0, "count": goal_count, "item": goal_item}
     if goal_item == "iron_ingot":
         return f"smelt {goal_count} iron_ingot", {"step": 0, "count": goal_count, "item": "iron_ingot"}
     return f"obtain {goal_count} {goal_item}", {"step": 0, "count": goal_count, "item": goal_item}
@@ -298,8 +423,13 @@ def _maybe_redirect_craft_goal(task_text: str, goal: Dict[str, Any], info: Dict[
     if "craft" not in task_text and "smelt" not in task_text:
         return None
     aggregate = _inventory_aggregate(info)
-    item = str(goal.get("item", "")).strip().lower()
-    count = int(goal.get("count", 1))
+    item = _normalize_item_name(goal.get("item", ""))
+    count = _goal_target_count(goal)
+    rewritten = _rewrite_impossible_goal(task_text, {"step": int(goal.get("step", 0) or 0), "count": count, "item": item})
+    if rewritten is not None:
+        redirected_task, redirected_goal, reason = rewritten
+        logger.info("Redirecting impossible goal (%s): task=%s goal=%s -> task=%s goal=%s", reason, task_text, goal, redirected_task, redirected_goal)
+        return redirected_task, redirected_goal
     prereq = _required_count_for_craft_prereq(item, count, aggregate)
     if prereq is None:
         return None
@@ -410,6 +540,7 @@ def _try_replan(trigger: str, force: bool = False, threshold_seconds: int | None
 
     state_context = _state_context_text(current_info)
     response_text, _sub_plans, _goals = model.plan(planning_query, state_context=state_context, from_scratch=False)
+    _sub_plans, _goals, plan_stats = _sanitize_plan_steps(_sub_plans, _goals, current_info)
     if not _sub_plans or not _goals:
         return False, "empty_replan"
     _log_llm_event(
@@ -422,7 +553,7 @@ def _try_replan(trigger: str, force: bool = False, threshold_seconds: int | None
             "threshold_seconds": threshold,
         },
         response_text,
-        {"plan_length": min(len(_sub_plans), len(_goals))},
+        plan_stats,
     )
     sub_tasks = _sub_plans
     goals = _goals
@@ -763,6 +894,7 @@ async def send_text(text_data: TextData):
                         state_context=state_context,
                         from_scratch=from_scratch,
                     )
+                    _sub_plans, _goals, plan_stats = _sanitize_plan_steps(_sub_plans, _goals, current_info)
                     _log_llm_event(
                         "orchestration_plan" if orchestrator_mode else "planning",
                         {
@@ -773,7 +905,7 @@ async def send_text(text_data: TextData):
                             "orchestrator_objective": orchestrator_objective,
                         },
                         response_text,
-                        {"plan_length": min(len(_sub_plans), len(_goals))},
+                        plan_stats,
                     )
                     sub_tasks = _sub_plans
                     goals = _goals
@@ -812,57 +944,17 @@ async def send_text(text_data: TextData):
                             else:
                                 response_text = "success"
                         else:
-                            redirect = _maybe_redirect_craft_goal(sub_tasks[sub_task_index], goals[sub_task_index], current_info)
-                            if redirect is not None:
-                                redirected_task, redirected_goal = redirect
+                            while sub_task_index < plan_length and _goal_satisfied(goals[sub_task_index], current_info):
                                 logger.info(
-                                    "Redirecting stalled craft goal at index=%d from (%s, %s) to (%s, %s)",
+                                    "Skipping already satisfied goal at index=%d task=%s goal=%s",
                                     sub_task_index,
                                     sub_tasks[sub_task_index],
                                     goals[sub_task_index],
-                                    redirected_task,
-                                    redirected_goal,
                                 )
-                                sub_tasks[sub_task_index] = redirected_task
-                                goals[sub_task_index] = redirected_goal
-                                model.task = None
-                            if model.task is None:
-                                model.reset(sub_tasks[sub_task_index])
-                            obs, info, check = _step(
-                                env, model, current_obs, sub_tasks[sub_task_index], goals[sub_task_index], helper
-                            )
-                            if check:
                                 sub_task_index += 1
                                 model.task = None
                                 last_goal_completion_ts = time.time()
-                            current_obs = obs
-                            current_info = info
-                            if AUTO_REPLAN_ENABLED or orchestrator_mode:
-                                if orchestrator_mode:
-                                    if check and ORCHESTRATOR_REPLAN_ON_GOAL_COMPLETION:
-                                        replanned, _ = _try_replan("goal_completed", force=False)
-                                        if replanned:
-                                            plan_length = _plan_length()
-                                    elif not check:
-                                        replanned, _ = _try_replan(
-                                            "no_progress",
-                                            force=False,
-                                            threshold_seconds=ORCHESTRATOR_NO_PROGRESS_SECONDS,
-                                        )
-                                        if replanned:
-                                            plan_length = _plan_length()
-                                else:
-                                    if check and REPLAN_ON_GOAL_COMPLETION:
-                                        replanned, _ = _try_replan("goal_completed", force=False)
-                                        if replanned:
-                                            plan_length = _plan_length()
-                                    elif not check:
-                                        replanned, _ = _try_replan("no_progress", force=False)
-                                        if replanned:
-                                            plan_length = _plan_length()
-                            if sub_task_index < plan_length:
-                                response_text = sub_tasks[sub_task_index]
-                            else:
+                            if sub_task_index >= plan_length:
                                 if (
                                     orchestrator_mode
                                     and ORCHESTRATOR_FORCE_REPLAN_ON_PLAN_END
@@ -875,6 +967,81 @@ async def send_text(text_data: TextData):
                                         response_text = "orchestrator_waiting_for_new_plan"
                                 else:
                                     response_text = "success"
+                            else:
+                                redirect = _maybe_redirect_craft_goal(sub_tasks[sub_task_index], goals[sub_task_index], current_info)
+                                if redirect is not None:
+                                    redirected_task, redirected_goal = redirect
+                                    logger.info(
+                                        "Redirecting stalled craft goal at index=%d from (%s, %s) to (%s, %s)",
+                                        sub_task_index,
+                                        sub_tasks[sub_task_index],
+                                        goals[sub_task_index],
+                                        redirected_task,
+                                        redirected_goal,
+                                    )
+                                    sub_tasks[sub_task_index] = redirected_task
+                                    goals[sub_task_index] = redirected_goal
+                                    model.task = None
+                                if model.task is None:
+                                    model.reset(sub_tasks[sub_task_index])
+                                obs, info, check = _step(
+                                    env, model, current_obs, sub_tasks[sub_task_index], goals[sub_task_index], helper
+                                )
+                                if check:
+                                    sub_task_index += 1
+                                    model.task = None
+                                    last_goal_completion_ts = time.time()
+                                current_obs = obs
+                                current_info = info
+                                if AUTO_REPLAN_ENABLED or orchestrator_mode:
+                                    if orchestrator_mode:
+                                        if check and ORCHESTRATOR_REPLAN_ON_GOAL_COMPLETION:
+                                            replanned, _ = _try_replan("goal_completed", force=False)
+                                            if replanned:
+                                                plan_length = _plan_length()
+                                        elif not check:
+                                            replanned, _ = _try_replan(
+                                                "no_progress",
+                                                force=False,
+                                                threshold_seconds=ORCHESTRATOR_NO_PROGRESS_SECONDS,
+                                            )
+                                            if replanned:
+                                                plan_length = _plan_length()
+                                    else:
+                                        if check and REPLAN_ON_GOAL_COMPLETION:
+                                            replanned, _ = _try_replan("goal_completed", force=False)
+                                            if replanned:
+                                                plan_length = _plan_length()
+                                        elif not check:
+                                            replanned, _ = _try_replan("no_progress", force=False)
+                                            if replanned:
+                                                plan_length = _plan_length()
+                                if sub_task_index < plan_length:
+                                    response_text = sub_tasks[sub_task_index]
+                                else:
+                                    if (
+                                        orchestrator_mode
+                                        and ORCHESTRATOR_FORCE_REPLAN_ON_PLAN_END
+                                        and not _objective_met(current_info, orchestrator_objective)
+                                    ):
+                                        replanned, _ = _try_replan("orchestrator_plan_exhausted", force=True)
+                                        if replanned and _plan_length() > 0:
+                                            response_text = sub_tasks[sub_task_index]
+                                        else:
+                                            response_text = "orchestrator_waiting_for_new_plan"
+                                    else:
+                                        response_text = "success"
+                                if (
+                                    response_text == "success"
+                                    and orchestrator_mode
+                                    and ORCHESTRATOR_FORCE_REPLAN_ON_PLAN_END
+                                    and not _objective_met(current_info, orchestrator_objective)
+                                ):
+                                    replanned, _ = _try_replan("orchestrator_plan_exhausted", force=True)
+                                    if replanned and _plan_length() > 0:
+                                        response_text = sub_tasks[sub_task_index]
+                                    else:
+                                        response_text = "orchestrator_waiting_for_new_plan"
                 elif task_type == "grounding":
                     response_text = model.grounding(user_text, img)
                 else:
