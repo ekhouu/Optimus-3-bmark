@@ -45,6 +45,7 @@ class DiscordNotifier:
     max_retries: int = 3
     retry_backoff_s: float = 1.5
     verbose: bool = False
+    user_agent: str = "Optimus-3-PrimeCampaign/1.0"
 
     def __post_init__(self):
         self._last_sent = 0.0
@@ -71,7 +72,10 @@ class DiscordNotifier:
         req = request.Request(
             url=self.webhook_url,
             method="POST",
-            headers={"Content-Type": "application/json"},
+            headers={
+                "Content-Type": "application/json",
+                "User-Agent": self.user_agent,
+            },
             data=json.dumps(payload).encode("utf-8"),
         )
         ok = self._send_request(req)
@@ -118,7 +122,10 @@ class DiscordNotifier:
         req = request.Request(
             url=self.webhook_url,
             method="POST",
-            headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
+            headers={
+                "Content-Type": f"multipart/form-data; boundary={boundary}",
+                "User-Agent": self.user_agent,
+            },
             data=body,
         )
         ok = self._send_request(req)
