@@ -17,10 +17,15 @@ import csv
 import json
 import random
 import statistics
+import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+# Support both `python tools/prime_rl_campaign.py` and module imports.
+if __package__ in {None, ""}:
+    sys.path.append(str(Path(__file__).resolve().parents[1]))
 
 from tools.prime_rl_rollout_logger import DiscordNotifier, RolloutConfig, run_rollout
 
