@@ -136,8 +136,11 @@ REPLAN_ON_GOAL_COMPLETION = _env_or_default("OPTIMUS_REPLAN_ON_GOAL_COMPLETION",
 ORCHESTRATOR_NO_PROGRESS_SECONDS = int(_env_or_default("OPTIMUS_ORCHESTRATOR_NO_PROGRESS_SECONDS", "120"))
 ORCHESTRATOR_REPLAN_ON_GOAL_COMPLETION = _env_or_default("OPTIMUS_ORCHESTRATOR_REPLAN_ON_GOAL_COMPLETION", "1") == "1"
 ORCHESTRATOR_FORCE_REPLAN_ON_PLAN_END = _env_or_default("OPTIMUS_ORCHESTRATOR_FORCE_REPLAN_ON_PLAN_END", "1") == "1"
+STREAM_OBS_ENABLED = _env_or_default("OPTIMUS_STREAM_OBS", "1") == "1"
+STREAM_OBS_EVERY_N = max(1, int(_env_or_default("OPTIMUS_STREAM_OBS_EVERY_N", "1")))
 RUN_LOG_DIR = Path(_env_or_default("OPTIMUS_RUN_LOG_DIR", str(REPO_ROOT / "outputs" / "server_traces")))
 LLM_TRACE_LOG_PATH = Path(_env_or_default("OPTIMUS_LLM_TRACE_LOG", str(RUN_LOG_DIR / "llm_trace.jsonl")))
+stream_obs_counter = 0
 
 
 def _append_jsonl(path: Path, row: Dict[str, Any]) -> None:
@@ -477,6 +480,29 @@ async def broadcast_obs(base64_png: str):
             connected_clients.remove(ws)
 
 
+def _should_stream_obs(force: bool = False) -> bool:
+    global stream_obs_counter
+    if not STREAM_OBS_ENABLED:
+        return False
+    if not connected_clients:
+        return False
+    if force:
+        return True
+    stream_obs_counter += 1
+    return stream_obs_counter % STREAM_OBS_EVERY_N == 0
+
+
+def _schedule_obs_broadcast_from_pov(pov: np.ndarray, force: bool = False) -> None:
+    if not _should_stream_obs(force=force):
+        return
+    try:
+        obs_b64 = ndarray_to_base64(pov)
+    except Exception:
+        logger.exception("Failed to encode observation frame")
+        return
+    asyncio.create_task(broadcast_obs(obs_b64))
+
+
 @app.post("/pause")
 async def pause_agent():
 
@@ -541,6 +567,7 @@ async def reset(reset_data: ResetData):
     global env, model, current_obs, session_start_time, session_id, helper, current_info
     global sub_tasks, goals, sub_task_index, planning_query, last_goal_completion_ts, last_replan_ts
     global orchestrator_mode, orchestrator_objective
+    global stream_obs_counter
 
     try:
         # Close existing environment if one exists
@@ -578,6 +605,7 @@ async def reset(reset_data: ResetData):
         last_replan_ts = None
         orchestrator_mode = False
         orchestrator_objective = None
+        stream_obs_counter = 0
         helper = {"craft": CraftWorker(env), "smelt": SmeltWorker(env), "equip": EquipWorker(env)}
         if not model:
             logger.info(
@@ -593,9 +621,7 @@ async def reset(reset_data: ResetData):
                 device=reset_data.device,
             )
         obs_b64 = ndarray_to_base64(current_info["pov"])
-        import asyncio
-
-        asyncio.create_task(broadcast_obs(obs_b64))
+        _schedule_obs_broadcast_from_pov(current_info["pov"], force=True)
         return {"status": "success", "observation": obs_b64}
         
 
@@ -610,7 +636,7 @@ def _step(env, agent, obs, task, goal, helper):
     while paused:
         time.sleep(0.05)
     if "craft" in task:
-        helper["craft"].step_hook = lambda info: asyncio.create_task(broadcast_obs(ndarray_to_base64(info["pov"])))
+        helper["craft"].step_hook = lambda info: _schedule_obs_broadcast_from_pov(info["pov"])
         result, _ = helper["craft"].crafting(goal["item"], goal["count"])
         action = env.env.noop_action()
 
@@ -620,7 +646,7 @@ def _step(env, agent, obs, task, goal, helper):
         obs, reward, terminated, truncated, info = env.step(action)
 
     elif "smelt" in task:
-        helper["smelt"].step_hook = lambda info: asyncio.create_task(broadcast_obs(ndarray_to_base64(info["pov"])))
+        helper["smelt"].step_hook = lambda info: _schedule_obs_broadcast_from_pov(info["pov"])
         result, _ = helper["smelt"].smelting(goal["item"], goal["count"])
         obs, reward, terminated, truncated, info = env.step(env.env.noop_action())
     else:
@@ -719,7 +745,7 @@ async def send_text(text_data: TextData):
             """
         else:
             with torch.no_grad():
-                print(f"Task type: {task_type}")
+                logger.debug("Task type: %s", task_type)
                 is_orchestrate_request = (task_type == "orchestrate") or user_text.lower().startswith("orchestrate")
                 if task_type == "planning" or task_type == "orchestrate":
                     planning_text = _strip_orchestrate_prefix(user_text) if is_orchestrate_request else user_text
@@ -853,14 +879,11 @@ async def send_text(text_data: TextData):
                     response_text = model.grounding(user_text, img)
                 else:
                     response_text = "Unknown task type. Please try again."
-                print(response_text)
+                logger.debug("Response text: %s", response_text)
 
         response_text = response_text.strip().lower()
         if current_info and "pov" in current_info:
-            print("image")
-            obs_b64 = ndarray_to_base64(current_info["pov"])
-
-            asyncio.create_task(broadcast_obs(obs_b64))
+            _schedule_obs_broadcast_from_pov(current_info["pov"])
 
         return {
             "status": "success",
