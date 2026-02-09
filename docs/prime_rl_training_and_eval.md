@@ -104,6 +104,45 @@ python tools/prime_rl_campaign.py \
   --discord-send-final-artifacts
 ```
 
+### Stone-focused curriculum campaign
+Use this as a lower-horizon stage before iron/diamond:
+
+```bash
+python tools/prime_rl_campaign.py \
+  --base-url http://127.0.0.1:9500 \
+  --tasks-file tools/obtain_stone_tasks.txt \
+  --planning-task-type orchestrate \
+  --rubric-profile stone \
+  --episodes 30 \
+  --max-steps 700 \
+  --replan-threshold-seconds 90 \
+  --step-sleep-seconds 0.35 \
+  --out-dir /workspace/outputs/prime_campaigns_stone \
+  --continue-on-error \
+  --discord-webhook-url "$DISCORD_WEBHOOK_URL" \
+  --discord-test-on-start \
+  --discord-episode-interval 1 \
+  --discord-artifact-interval 10 \
+  --discord-send-final-artifacts
+```
+
+Stone rubric milestones (profile=`stone`):
+- `m_logs`
+- `m_planks`
+- `m_sticks`
+- `m_crafting_table`
+- `m_wooden_pickaxe`
+- `m_cobblestone`
+- `m_stone_pickaxe`
+- `m_stone_goal`
+- `m_goal_progress`
+
+Stone bonus metrics:
+- `b_furnace_bonus`
+- `b_low_replans`
+- `b_efficiency`
+- `b_extra_cobblestone`
+
 Campaign outputs:
 - `campaign_*/episodes.jsonl` and `episodes.csv`
 - `campaign_*/prime_verifier_records.jsonl` and `prime_verifier_records.csv`

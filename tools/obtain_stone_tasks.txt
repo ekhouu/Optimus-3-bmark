@@ -1,0 +1,6 @@
+orchestrate to obtain 8 cobblestone
+orchestrate to obtain 16 cobblestone
+orchestrate to get a crafting table and then obtain 8 cobblestone
+orchestrate to craft a wooden pickaxe and obtain 12 cobblestone
+orchestrate to obtain a stone_pickaxe
+orchestrate to obtain 24 cobblestone and craft a furnace
